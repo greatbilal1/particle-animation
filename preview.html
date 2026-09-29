@@ -242,6 +242,7 @@
     shapeParticleSpacing: 15, // approximate visual spacing between shape particles
     shapeMotion: 0.92,       // overall shape movement response
     shapeDeform: 1.0,        // strength of local shape deformation
+    shapeDissolve: 2.6,      // seconds the shape takes to melt back into the flow
   };
 
   // ---------------------------------------------------------------- state
@@ -664,6 +665,7 @@
       this.targetDelay = 0;              // staggered start time for formation motion
       this.targetSeed = rand(0, Math.PI * 2);
       this.arrived = false;              // has it reached its shape target
+      this.inFormation = false;          // already part of a shape (survives re-forms)
       this.tier = null;                  // 'edge' | 'detail' | 'fill' while in a shape
       this.edge = false;                 // sits on the silhouette outline
       this.edgeBoost = 0;                // 0..1 extra brightness for outline particles
@@ -712,7 +714,11 @@
         const formationAge = shape ? shape.age : 99;
         const activeAge = formationAge - this.targetDelay;
 
-        if (activeAge <= 0) {
+        // A particle that was already part of a formation must not stall when
+        // the shape changes: shape.age resets to 0 on every re-form, which
+        // would make activeAge negative and freeze it. `inFormation` lets it
+        // keep flowing straight into its new target instead.
+        if (activeAge <= 0 && !this.inFormation) {
           // Keep drifting naturally until this particle's formation wave arrives.
           this.wanderAngle += Math.sin(time * 0.8 + this.targetSeed) * 0.018 * dt;
           this.vx += Math.cos(this.wanderAngle) * 0.045 * dt;
@@ -1388,6 +1394,11 @@
   const shapeCanvas = document.createElement('canvas');
   const shapeCtx = shapeCanvas.getContext('2d', { willReadFrequently: true });
 
+  // A second offscreen canvas holds the small feature marks (eyes, ears,
+  // whiskers) so they can be sampled independently of the body silhouette.
+  const featureCanvas = document.createElement('canvas');
+  const featureCtx = featureCanvas.getContext('2d', { willReadFrequently: true });
+
   // Silhouettes are authored in a 100 x 100 box, then scaled to fit the view.
   // Each entry is a list of paths; a path is a list of [x, y] points. Paths
   // are filled, so closed outlines read as solid bodies.
@@ -1671,6 +1682,333 @@
     crown2: [],
   };
 
+  // ---------------------------------------------------------------- features
+  // Small anatomical marks that make a silhouette read as a specific creature
+  // rather than a generic blob. Authored in the same 100x100 box as SHAPES.
+  //   dot  { x, y, r }              filled circle  - eyes, spots, nostrils
+  //   ring { x, y, r, w }           stroked circle - eyes with a pupil
+  //   line { x1, y1, x2, y2, w }    straight stroke - whiskers, stripes, mouths
+  //   arc  { x, y, r, a0, a1, w }   curved stroke  - brows, smiles, gills
+  // Angles are radians, 0 = east, increasing clockwise on screen.
+  const SHAPE_FEATURES = {
+    rabbit: [
+      { kind: 'dot', x: 42, y: 42, r: 2.6 },          // eyes
+      { kind: 'dot', x: 58, y: 42, r: 2.6 },
+      { kind: 'dot', x: 50, y: 50, r: 1.8 },          // nose
+      { kind: 'line', x1: 50, y1: 52, x2: 50, y2: 56, w: 1.4 },   // mouth
+      { kind: 'line', x1: 44, y1: 52, x2: 38, y2: 50, w: 1.2 },   // whiskers
+      { kind: 'line', x1: 44, y1: 54, x2: 38, y2: 55, w: 1.2 },
+      { kind: 'line', x1: 56, y1: 52, x2: 62, y2: 50, w: 1.2 },
+      { kind: 'line', x1: 56, y1: 54, x2: 62, y2: 55, w: 1.2 },
+      { kind: 'line', x1: 38, y1: 20, x2: 40, y2: 26, w: 1.4 },   // inner ear
+      { kind: 'line', x1: 62, y1: 20, x2: 60, y2: 26, w: 1.4 },
+    ],
+    cat: [
+      { kind: 'dot', x: 40, y: 42, r: 2.8 },          // eyes
+      { kind: 'dot', x: 60, y: 42, r: 2.8 },
+      { kind: 'dot', x: 50, y: 50, r: 1.8 },          // nose
+      { kind: 'arc', x: 50, y: 50, r: 5, a0: 0.35, a1: 2.79, w: 1.4 },  // mouth
+      { kind: 'line', x1: 42, y1: 52, x2: 30, y2: 48, w: 1.2 },   // whiskers
+      { kind: 'line', x1: 42, y1: 55, x2: 30, y2: 56, w: 1.2 },
+      { kind: 'line', x1: 58, y1: 52, x2: 70, y2: 48, w: 1.2 },
+      { kind: 'line', x1: 58, y1: 55, x2: 70, y2: 56, w: 1.2 },
+      { kind: 'line', x1: 34, y1: 22, x2: 38, y2: 30, w: 1.4 },   // inner ear
+      { kind: 'line', x1: 66, y1: 22, x2: 62, y2: 30, w: 1.4 },
+    ],
+    dog: [
+      { kind: 'dot', x: 40, y: 40, r: 2.8 },          // eyes
+      { kind: 'dot', x: 60, y: 40, r: 2.8 },
+      { kind: 'dot', x: 50, y: 56, r: 2.4 },          // nose
+      { kind: 'arc', x: 50, y: 56, r: 6, a0: 0.4, a1: 2.74, w: 1.4 },   // mouth
+      { kind: 'line', x1: 50, y1: 58, x2: 50, y2: 64, w: 1.3 },   // muzzle split
+      { kind: 'line', x1: 30, y1: 44, x2: 24, y2: 52, w: 1.4 },   // ear fold
+      { kind: 'line', x1: 70, y1: 44, x2: 76, y2: 52, w: 1.4 },
+    ],
+    fox: [
+      { kind: 'dot', x: 40, y: 40, r: 2.6 },          // eyes
+      { kind: 'dot', x: 60, y: 40, r: 2.6 },
+      { kind: 'dot', x: 50, y: 56, r: 2.2 },          // nose
+      { kind: 'line', x1: 50, y1: 58, x2: 50, y2: 62, w: 1.3 },   // muzzle
+      { kind: 'line', x1: 34, y1: 20, x2: 38, y2: 28, w: 1.4 },   // inner ear
+      { kind: 'line', x1: 66, y1: 20, x2: 62, y2: 28, w: 1.4 },
+      { kind: 'line', x1: 78, y1: 72, x2: 88, y2: 76, w: 1.6 },   // tail tip
+    ],
+    bird: [
+      { kind: 'dot', x: 58, y: 30, r: 2.4 },          // eye
+      { kind: 'line', x1: 68, y1: 34, x2: 82, y2: 34, w: 1.3 },   // beak split
+      { kind: 'arc', x: 50, y: 58, r: 12, a0: 3.5, a1: 5.9, w: 1.5 },   // wing
+      { kind: 'line', x1: 44, y1: 52, x2: 30, y2: 60, w: 1.3 },   // wing feather
+      { kind: 'line', x1: 44, y1: 58, x2: 32, y2: 64, w: 1.3 },
+    ],
+    fish: [
+      { kind: 'ring', x: 66, y: 47, r: 3.4, w: 1.6 },  // eye
+      { kind: 'dot', x: 66, y: 47, r: 1.4 },           // pupil
+      { kind: 'arc', x: 52, y: 50, r: 9, a0: 2.6, a1: 3.7, w: 1.4 },   // gill
+      { kind: 'line', x1: 40, y1: 40, x2: 34, y2: 44, w: 1.2 },   // scales
+      { kind: 'line', x1: 46, y1: 38, x2: 40, y2: 42, w: 1.2 },
+      { kind: 'line', x1: 40, y1: 58, x2: 34, y2: 54, w: 1.2 },
+      { kind: 'line', x1: 46, y1: 60, x2: 40, y2: 56, w: 1.2 },
+    ],
+    ghost: [
+      { kind: 'dot', x: 42, y: 45, r: 3.2 },          // eyes
+      { kind: 'dot', x: 58, y: 45, r: 3.2 },
+      { kind: 'arc', x: 50, y: 54, r: 6, a0: 0.4, a1: 2.74, w: 1.6 },   // mouth
+    ],
+    skull: [
+      { kind: 'dot', x: 41, y: 40, r: 4.2 },          // eye sockets
+      { kind: 'dot', x: 59, y: 40, r: 4.2 },
+      { kind: 'line', x1: 50, y1: 48, x2: 50, y2: 56, w: 1.6 },   // nose
+      { kind: 'line', x1: 44, y1: 68, x2: 44, y2: 78, w: 1.4 },   // teeth
+      { kind: 'line', x1: 50, y1: 68, x2: 50, y2: 78, w: 1.4 },
+      { kind: 'line', x1: 56, y1: 68, x2: 56, y2: 78, w: 1.4 },
+    ],
+    owl: [
+      { kind: 'ring', x: 39, y: 42, r: 6.5, w: 1.6 },  // eye discs
+      { kind: 'ring', x: 61, y: 42, r: 6.5, w: 1.6 },
+      { kind: 'dot', x: 39, y: 42, r: 2.6 },           // pupils
+      { kind: 'dot', x: 61, y: 42, r: 2.6 },
+      { kind: 'line', x1: 50, y1: 46, x2: 50, y2: 54, w: 1.5 },   // beak
+      { kind: 'line', x1: 50, y1: 54, x2: 46, y2: 58, w: 1.3 },
+      { kind: 'line', x1: 50, y1: 54, x2: 54, y2: 58, w: 1.3 },
+      { kind: 'line', x1: 34, y1: 62, x2: 40, y2: 70, w: 1.3 },   // chest feathers
+      { kind: 'line', x1: 66, y1: 62, x2: 60, y2: 70, w: 1.3 },
+    ],
+    bee: [
+      { kind: 'dot', x: 40, y: 40, r: 2.4 },          // eyes
+      { kind: 'dot', x: 60, y: 40, r: 2.4 },
+      { kind: 'line', x1: 36, y1: 46, x2: 36, y2: 62, w: 2.0 },   // stripes
+      { kind: 'line', x1: 46, y1: 44, x2: 46, y2: 64, w: 2.0 },
+      { kind: 'line', x1: 56, y1: 44, x2: 56, y2: 64, w: 2.0 },
+      { kind: 'line', x1: 66, y1: 46, x2: 66, y2: 62, w: 2.0 },
+    ],
+    elephant: [
+      { kind: 'dot', x: 40, y: 36, r: 2.8 },          // eyes
+      { kind: 'dot', x: 58, y: 36, r: 2.8 },
+      { kind: 'arc', x: 50, y: 62, r: 8, a0: 0.5, a1: 2.64, w: 1.5 },   // trunk curl
+      { kind: 'line', x1: 34, y1: 30, x2: 30, y2: 40, w: 1.5 },   // ear fold
+      { kind: 'line', x1: 66, y1: 30, x2: 70, y2: 40, w: 1.5 },
+      { kind: 'line', x1: 44, y1: 74, x2: 44, y2: 88, w: 1.4 },   // legs
+      { kind: 'line', x1: 56, y1: 74, x2: 56, y2: 88, w: 1.4 },
+    ],
+    dinosaur: [
+      { kind: 'dot', x: 62, y: 28, r: 2.4 },          // eye
+      { kind: 'arc', x: 66, y: 34, r: 5, a0: 0.4, a1: 2.74, w: 1.4 },   // mouth
+      { kind: 'line', x1: 30, y1: 46, x2: 34, y2: 40, w: 1.5 },   // back spikes
+      { kind: 'line', x1: 40, y1: 44, x2: 44, y2: 38, w: 1.5 },
+      { kind: 'line', x1: 50, y1: 40, x2: 54, y2: 34, w: 1.5 },
+      { kind: 'line', x1: 60, y1: 36, x2: 64, y2: 30, w: 1.5 },
+      { kind: 'line', x1: 34, y1: 72, x2: 34, y2: 86, w: 1.4 },   // legs
+      { kind: 'line', x1: 58, y1: 72, x2: 58, y2: 86, w: 1.4 },
+    ],
+    turtle: [
+      { kind: 'dot', x: 84, y: 42, r: 2.2 },          // eye
+      { kind: 'line', x1: 84, y1: 46, x2: 88, y2: 48, w: 1.2 },   // mouth
+      { kind: 'line', x1: 50, y1: 30, x2: 50, y2: 66, w: 1.4 },   // shell ridges
+      { kind: 'line', x1: 34, y1: 36, x2: 34, y2: 60, w: 1.3 },
+      { kind: 'line', x1: 66, y1: 36, x2: 66, y2: 60, w: 1.3 },
+      { kind: 'line', x1: 26, y1: 46, x2: 74, y2: 46, w: 1.3 },
+    ],
+    dolphin: [
+      { kind: 'dot', x: 74, y: 44, r: 2.4 },          // eye
+      { kind: 'arc', x: 62, y: 50, r: 10, a0: 2.5, a1: 3.8, w: 1.4 },   // gill
+      { kind: 'line', x1: 40, y1: 44, x2: 34, y2: 48, w: 1.2 },   // flank
+      { kind: 'line', x1: 46, y1: 42, x2: 40, y2: 46, w: 1.2 },
+    ],
+    whale: [
+      { kind: 'dot', x: 72, y: 42, r: 2.4 },          // eye
+      { kind: 'arc', x: 60, y: 50, r: 11, a0: 2.5, a1: 3.8, w: 1.4 },   // gill
+      { kind: 'line', x1: 40, y1: 44, x2: 34, y2: 48, w: 1.2 },   // belly lines
+      { kind: 'line', x1: 46, y1: 42, x2: 40, y2: 46, w: 1.2 },
+      { kind: 'line', x1: 52, y1: 40, x2: 46, y2: 44, w: 1.2 },
+    ],
+    butterfly: [
+      { kind: 'dot', x: 47, y: 40, r: 2.0 },          // eyes
+      { kind: 'dot', x: 53, y: 40, r: 2.0 },
+      { kind: 'line', x1: 46, y1: 34, x2: 40, y2: 26, w: 1.3 },   // antennae
+      { kind: 'line', x1: 54, y1: 34, x2: 60, y2: 26, w: 1.3 },
+      { kind: 'dot', x: 40, y: 25, r: 1.6 },          // antenna tips
+      { kind: 'dot', x: 60, y: 25, r: 1.6 },
+      { kind: 'dot', x: 24, y: 44, r: 3.0 },          // wing spots
+      { kind: 'dot', x: 76, y: 44, r: 3.0 },
+      { kind: 'dot', x: 30, y: 62, r: 2.4 },
+      { kind: 'dot', x: 70, y: 62, r: 2.4 },
+    ],
+    flower: [
+      { kind: 'dot', x: 50, y: 58, r: 4.0 },          // centre
+      { kind: 'dot', x: 50, y: 58, r: 2.0 },          // inner centre
+      { kind: 'line', x1: 50, y1: 24, x2: 50, y2: 34, w: 1.3 },   // petal veins
+      { kind: 'line', x1: 72, y1: 38, x2: 66, y2: 44, w: 1.3 },
+      { kind: 'line', x1: 28, y1: 38, x2: 34, y2: 44, w: 1.3 },
+      { kind: 'line', x1: 50, y1: 66, x2: 50, y2: 72, w: 1.3 },
+    ],
+    smile: [
+      { kind: 'dot', x: 35, y: 45, r: 3.4 },          // eyes
+      { kind: 'dot', x: 65, y: 45, r: 3.4 },
+      { kind: 'arc', x: 50, y: 58, r: 14, a0: 0.5, a1: 2.64, w: 2.0 },  // smile
+    ],
+    sun: [
+      { kind: 'dot', x: 44, y: 46, r: 2.6 },          // eyes
+      { kind: 'dot', x: 56, y: 46, r: 2.6 },
+      { kind: 'arc', x: 50, y: 52, r: 6, a0: 0.5, a1: 2.64, w: 1.6 },   // smile
+    ],
+    moon: [
+      { kind: 'dot', x: 40, y: 44, r: 2.4 },          // eye
+      { kind: 'arc', x: 42, y: 54, r: 5, a0: 0.5, a1: 2.64, w: 1.4 },   // smile
+    ],
+    heart: [
+      { kind: 'line', x1: 50, y1: 34, x2: 50, y2: 62, w: 1.6 },   // highlight
+      { kind: 'line', x1: 38, y1: 40, x2: 38, y2: 54, w: 1.4 },
+      { kind: 'line', x1: 62, y1: 40, x2: 62, y2: 54, w: 1.4 },
+    ],
+    star: [
+      { kind: 'dot', x: 50, y: 50, r: 3.0 },          // core
+    ],
+    tree: [
+      { kind: 'line', x1: 50, y1: 76, x2: 50, y2: 92, w: 1.6 },   // bark
+      { kind: 'line', x1: 44, y1: 80, x2: 44, y2: 90, w: 1.3 },
+      { kind: 'line', x1: 56, y1: 80, x2: 56, y2: 90, w: 1.3 },
+      { kind: 'line', x1: 40, y1: 40, x2: 46, y2: 48, w: 1.3 },   // foliage
+      { kind: 'line', x1: 60, y1: 40, x2: 54, y2: 48, w: 1.3 },
+      { kind: 'line', x1: 50, y1: 30, x2: 50, y2: 40, w: 1.3 },
+    ],
+    leaf: [
+      { kind: 'line', x1: 50, y1: 12, x2: 50, y2: 88, w: 1.6 },   // midrib
+      { kind: 'line', x1: 50, y1: 30, x2: 34, y2: 40, w: 1.2 },   // veins
+      { kind: 'line', x1: 50, y1: 30, x2: 66, y2: 40, w: 1.2 },
+      { kind: 'line', x1: 50, y1: 48, x2: 32, y2: 58, w: 1.2 },
+      { kind: 'line', x1: 50, y1: 48, x2: 68, y2: 58, w: 1.2 },
+      { kind: 'line', x1: 50, y1: 66, x2: 38, y2: 74, w: 1.2 },
+      { kind: 'line', x1: 50, y1: 66, x2: 62, y2: 74, w: 1.2 },
+    ],
+    mushroom: [
+      { kind: 'dot', x: 34, y: 30, r: 3.0 },          // cap spots
+      { kind: 'dot', x: 62, y: 26, r: 2.6 },
+      { kind: 'dot', x: 50, y: 38, r: 2.4 },
+      { kind: 'dot', x: 74, y: 38, r: 2.2 },
+      { kind: 'dot', x: 24, y: 40, r: 2.2 },
+      { kind: 'line', x1: 44, y1: 56, x2: 44, y2: 86, w: 1.3 },   // stem lines
+      { kind: 'line', x1: 56, y1: 56, x2: 56, y2: 86, w: 1.3 },
+    ],
+    house: [
+      { kind: 'line', x1: 50, y1: 12, x2: 50, y2: 44, w: 1.4 },   // roof ridge
+      { kind: 'line', x1: 30, y1: 30, x2: 30, y2: 44, w: 1.3 },   // roof battens
+      { kind: 'line', x1: 70, y1: 30, x2: 70, y2: 44, w: 1.3 },
+      { kind: 'dot', x: 54, y: 78, r: 1.8 },          // door knob
+      { kind: 'line', x1: 24, y1: 56, x2: 36, y2: 56, w: 1.4 },   // window
+      { kind: 'line', x1: 24, y1: 68, x2: 36, y2: 68, w: 1.4 },
+      { kind: 'line', x1: 24, y1: 56, x2: 24, y2: 68, w: 1.4 },
+      { kind: 'line', x1: 36, y1: 56, x2: 36, y2: 68, w: 1.4 },
+      { kind: 'line', x1: 64, y1: 56, x2: 76, y2: 56, w: 1.4 },
+      { kind: 'line', x1: 64, y1: 68, x2: 76, y2: 68, w: 1.4 },
+      { kind: 'line', x1: 64, y1: 56, x2: 64, y2: 68, w: 1.4 },
+      { kind: 'line', x1: 76, y1: 56, x2: 76, y2: 68, w: 1.4 },
+    ],
+    car: [
+      { kind: 'line', x1: 44, y1: 30, x2: 44, y2: 42, w: 1.4 },   // window split
+      { kind: 'line', x1: 58, y1: 30, x2: 58, y2: 42, w: 1.4 },
+      { kind: 'line', x1: 34, y1: 30, x2: 70, y2: 30, w: 1.3 },   // roofline
+      { kind: 'dot', x: 30, y: 74, r: 3.0 },          // hubcaps
+      { kind: 'dot', x: 70, y: 74, r: 3.0 },
+      { kind: 'line', x1: 8, y1: 56, x2: 16, y2: 56, w: 1.4 },    // headlight
+      { kind: 'line', x1: 86, y1: 56, x2: 94, y2: 56, w: 1.4 },   // taillight
+    ],
+    rocket: [
+      { kind: 'ring', x: 50, y: 46, r: 6, w: 1.6 },   // porthole
+      { kind: 'line', x1: 40, y1: 60, x2: 60, y2: 60, w: 1.4 },   // body band
+      { kind: 'line', x1: 50, y1: 74, x2: 50, y2: 92, w: 1.6 },   // flame core
+      { kind: 'line', x1: 44, y1: 78, x2: 44, y2: 88, w: 1.3 },
+      { kind: 'line', x1: 56, y1: 78, x2: 56, y2: 88, w: 1.3 },
+    ],
+    spaceship: [
+      { kind: 'ring', x: 50, y: 40, r: 7, w: 1.6 },   // cockpit
+      { kind: 'line', x1: 34, y1: 60, x2: 66, y2: 60, w: 1.4 },   // hull line
+      { kind: 'dot', x: 38, y: 72, r: 2.2 },          // lights
+      { kind: 'dot', x: 50, y: 76, r: 2.2 },
+      { kind: 'dot', x: 62, y: 72, r: 2.2 },
+    ],
+    plane: [
+      { kind: 'line', x1: 50, y1: 14, x2: 50, y2: 88, w: 1.5 },   // fuselage
+      { kind: 'line', x1: 14, y1: 51, x2: 86, y2: 51, w: 1.4 },   // wing line
+      { kind: 'dot', x: 50, y: 20, r: 2.0 },          // cockpit
+    ],
+    boat: [
+      { kind: 'line', x1: 50, y1: 18, x2: 50, y2: 60, w: 1.5 },   // mast
+      { kind: 'line', x1: 54, y1: 24, x2: 78, y2: 48, w: 1.3 },   // sail
+      { kind: 'line', x1: 54, y1: 24, x2: 54, y2: 48, w: 1.3 },
+      { kind: 'line', x1: 20, y1: 68, x2: 80, y2: 68, w: 1.4 },   // hull line
+    ],
+    umbrella: [
+      { kind: 'line', x1: 50, y1: 16, x2: 50, y2: 48, w: 1.4 },   // ribs
+      { kind: 'line', x1: 50, y1: 16, x2: 22, y2: 44, w: 1.3 },
+      { kind: 'line', x1: 50, y1: 16, x2: 78, y2: 44, w: 1.3 },
+      { kind: 'line', x1: 50, y1: 16, x2: 36, y2: 46, w: 1.2 },
+      { kind: 'line', x1: 50, y1: 16, x2: 64, y2: 46, w: 1.2 },
+    ],
+    balloon: [
+      { kind: 'line', x1: 42, y1: 26, x2: 38, y2: 40, w: 1.4 },   // highlight
+      { kind: 'line', x1: 38, y1: 40, x2: 42, y2: 54, w: 1.4 },
+      { kind: 'line', x1: 50, y1: 78, x2: 50, y2: 92, w: 1.4 },   // string
+    ],
+    key: [
+      { kind: 'ring', x: 34, y: 42, r: 5, w: 1.6 },   // bow hole
+      { kind: 'line', x1: 74, y1: 42, x2: 74, y2: 46, w: 1.4 },   // teeth
+      { kind: 'line', x1: 86, y1: 42, x2: 86, y2: 46, w: 1.4 },
+    ],
+    anchor: [
+      { kind: 'ring', x: 50, y: 16, r: 4, w: 1.6 },   // shackle
+      { kind: 'line', x1: 50, y1: 22, x2: 50, y2: 78, w: 1.5 },   // shaft
+      { kind: 'line', x1: 30, y1: 38, x2: 70, y2: 38, w: 1.4 },   // stock
+    ],
+    sword: [
+      { kind: 'line', x1: 50, y1: 10, x2: 50, y2: 64, w: 1.5 },   // fuller
+      { kind: 'line', x1: 32, y1: 70, x2: 68, y2: 70, w: 1.4 },   // guard line
+      { kind: 'line', x1: 50, y1: 78, x2: 50, y2: 90, w: 1.4 },   // grip wrap
+    ],
+    crown: [
+      { kind: 'dot', x: 28, y: 56, r: 2.6 },          // jewels
+      { kind: 'dot', x: 50, y: 44, r: 3.0 },
+      { kind: 'dot', x: 72, y: 56, r: 2.6 },
+      { kind: 'line', x1: 10, y1: 68, x2: 90, y2: 68, w: 1.5 },   // band
+    ],
+    diamond: [
+      { kind: 'line', x1: 50, y1: 6, x2: 50, y2: 94, w: 1.4 },    // facets
+      { kind: 'line', x1: 8, y1: 50, x2: 92, y2: 50, w: 1.4 },
+      { kind: 'line', x1: 50, y1: 6, x2: 8, y2: 50, w: 1.2 },
+      { kind: 'line', x1: 50, y1: 6, x2: 92, y2: 50, w: 1.2 },
+    ],
+    mountain: [
+      { kind: 'line', x1: 34, y1: 34, x2: 26, y2: 46, w: 1.4 },   // snow line
+      { kind: 'line', x1: 34, y1: 34, x2: 42, y2: 46, w: 1.4 },
+      { kind: 'line', x1: 64, y1: 30, x2: 56, y2: 42, w: 1.4 },
+      { kind: 'line', x1: 64, y1: 30, x2: 72, y2: 42, w: 1.4 },
+    ],
+    cloud: [
+      { kind: 'arc', x: 40, y: 52, r: 10, a0: 3.4, a1: 6.0, w: 1.4 },   // puff lines
+      { kind: 'arc', x: 62, y: 50, r: 9, a0: 3.4, a1: 6.0, w: 1.4 },
+    ],
+    lightning: [
+      { kind: 'line', x1: 52, y1: 20, x2: 44, y2: 48, w: 1.4 },   // inner glow
+      { kind: 'line', x1: 44, y1: 48, x2: 50, y2: 48, w: 1.4 },
+      { kind: 'line', x1: 50, y1: 48, x2: 44, y2: 78, w: 1.4 },
+    ],
+    arrow: [
+      { kind: 'line', x1: 12, y1: 50, x2: 88, y2: 50, w: 1.5 },   // shaft
+      { kind: 'line', x1: 62, y1: 34, x2: 88, y2: 50, w: 1.4 },   // head
+      { kind: 'line', x1: 62, y1: 66, x2: 88, y2: 50, w: 1.4 },
+    ],
+    lock: [
+      { kind: 'ring', x: 50, y: 62, r: 5, w: 1.6 },   // keyhole
+      { kind: 'line', x1: 50, y1: 66, x2: 50, y2: 76, w: 1.6 },
+      { kind: 'line', x1: 34, y1: 24, x2: 34, y2: 40, w: 1.4 },   // shackle
+      { kind: 'line', x1: 66, y1: 24, x2: 66, y2: 40, w: 1.4 },
+    ],
+    music: [
+      { kind: 'dot', x: 28, y: 72, r: 3.0 },          // note heads
+      { kind: 'dot', x: 70, y: 60, r: 3.0 },
+      { kind: 'line', x1: 31, y1: 20, x2: 71, y2: 10, w: 1.6 },   // beam
+    ],
+  };
+
   // Per-shape colour identity. Each entry is [hue, hueSpread]; particles in a
   // formation are re-tinted toward this range so a rocket reads warm and a
   // fish reads cool, instead of every shape sharing the field's blue.
@@ -1739,10 +2077,80 @@
     const points = sampleSilhouette(data, cw, ch);
     if (!points.length) return null;
 
+    // --- feature layer ---------------------------------------------------
+    // Small marks (eyes, ears, whiskers, stripes) are authored separately so
+    // they survive rasterisation. A 4px eye inside a 600px silhouette would
+    // otherwise be swallowed by the fill tier and read as a dim smudge. Here
+    // they are stamped into their own mask and sampled as bright detail
+    // points, then merged in front of the body points.
+    const features = sampleFeatures(name, scale, cw, ch);
+    if (features.length) {
+      // features take priority: they are placed first so the budget keeps them
+      points.unshift(...features);
+    }
+
     // centre the drawing in the viewport
     const ox = (W - cw) / 2;
     const oy = (H - ch) / 2;
     return { points, ox, oy, cw, ch };
+  }
+
+  // Stamp the shape's feature marks into a mask and sample them densely.
+  // Features are authored as { kind, ... } entries in the same 100x100 box:
+  //   { kind: 'dot',  x, y, r }            - an eye / spot
+  //   { kind: 'ring', x, y, r, w }         - an eye with a pupil ring
+  //   { kind: 'line', x1, y1, x2, y2, w }  - a whisker / stripe / mouth
+  //   { kind: 'arc',  x, y, r, a0, a1, w } - a curved brow / smile
+  function sampleFeatures(name, scale, cw, ch) {
+    const feats = SHAPE_FEATURES[name];
+    if (!feats || !feats.length) return [];
+
+    const fc = featureCanvas;
+    fc.width = cw;
+    fc.height = ch;
+    const fx = featureCtx;
+    fx.setTransform(1, 0, 0, 1, 0, 0);
+    fx.clearRect(0, 0, cw, ch);
+    fx.fillStyle = '#fff';
+    fx.strokeStyle = '#fff';
+    fx.lineCap = 'round';
+    fx.lineJoin = 'round';
+
+    for (const f of feats) {
+      const w = (f.w || 2) * scale;
+      fx.lineWidth = Math.max(1.5, w);
+      if (f.kind === 'dot') {
+        fx.beginPath();
+        fx.arc(f.x * scale, f.y * scale, Math.max(1.5, f.r * scale), 0, Math.PI * 2);
+        fx.fill();
+      } else if (f.kind === 'ring') {
+        fx.beginPath();
+        fx.arc(f.x * scale, f.y * scale, Math.max(2, f.r * scale), 0, Math.PI * 2);
+        fx.stroke();
+      } else if (f.kind === 'line') {
+        fx.beginPath();
+        fx.moveTo(f.x1 * scale, f.y1 * scale);
+        fx.lineTo(f.x2 * scale, f.y2 * scale);
+        fx.stroke();
+      } else if (f.kind === 'arc') {
+        fx.beginPath();
+        fx.arc(f.x * scale, f.y * scale, Math.max(2, f.r * scale), f.a0, f.a1);
+        fx.stroke();
+      }
+    }
+
+    const data = fx.getImageData(0, 0, cw, ch).data;
+    const out = [];
+    // Sample features on a finer grid than the body so small marks keep shape.
+    const step = 2;
+    for (let y = 0; y < ch; y += step) {
+      for (let x = 0; x < cw; x += step) {
+        if (data[(y * cw + x) * 4 + 3] > 128) {
+          out.push({ x, y, tier: 'detail', d: 0, feature: true });
+        }
+      }
+    }
+    return out;
   }
 
   // Turn a rasterised silhouette into target points. The key idea is that a
@@ -1881,23 +2289,32 @@
   // most important cue for recognising a shape, so it is filled first and at
   // full density; the detail band comes next; whatever is left goes to the
   // interior, where we deliberately keep gaps so the shape does not blob up.
+  //
+  // Feature marks (eyes, whiskers, stripes) are protected: they are few and
+  // tiny, so they are reserved up front and never dropped by the sampler.
   function sampleForParticleBudget(points, count) {
     if (points.length <= count) return points.slice();
 
-    const edge = [], detail = [], fill = [];
+    const feat = [], edge = [], detail = [], fill = [];
     for (const p of points) {
-      if (p.tier === 'edge') edge.push(p);
+      if (p.feature) feat.push(p);
+      else if (p.tier === 'edge') edge.push(p);
       else if (p.tier === 'detail') detail.push(p);
       else fill.push(p);
     }
 
-    // Reserve the outline and detail bands first, but never let them starve
+    // Features are cheap and carry the most identity, so they always survive.
+    const featBudget = Math.min(feat.length, Math.max(12, Math.round(count * 0.14)));
+    const rest = count - featBudget;
+
+    // Reserve the outline and detail bands next, but never let them starve
     // the interior completely - a shape with no fill reads as a wireframe.
-    const edgeBudget = Math.min(edge.length, Math.round(count * 0.42));
-    const detailBudget = Math.min(detail.length, Math.round(count * 0.30));
-    const fillBudget = Math.max(0, count - edgeBudget - detailBudget);
+    const edgeBudget = Math.min(edge.length, Math.round(rest * 0.46));
+    const detailBudget = Math.min(detail.length, Math.round(rest * 0.30));
+    const fillBudget = Math.max(0, rest - edgeBudget - detailBudget);
 
     const result = [];
+    result.push(...evenSample(feat, featBudget));
     result.push(...evenSample(edge, edgeBudget));
     result.push(...evenSample(detail, detailBudget));
     result.push(...evenSample(fill, fillBudget));
@@ -1920,10 +2337,23 @@
 
   // Shared assignment: hand a carefully sized subset of living particles the
   // target points. All other particles remain part of the environment.
+  //
+  // The important part is HOW particles are matched to targets. Shuffling the
+  // pool at random makes every particle cross the field to an arbitrary point,
+  // which reads as chaos. Instead we match each target to the nearest available
+  // particle, so the new shape is assembled from whichever particles already
+  // sit closest to it - the silhouette appears to flow and re-form in place.
   function assignTargets(points, ox, oy, label, cw = W, ch = H) {
     // release any swarm members so they can join the formation
     for (const s of swarms) for (const p of s.members) p.swarm = null;
     swarms.length = 0;
+
+    // A new shape cancels any dissolve still in flight: the particles that
+    // were melting away are simply re-recruited into the new silhouette.
+    if (shape && shape.dissolving) {
+      shape = null;
+      shapeEl.style.opacity = '';
+    }
 
     const living = particles.filter(p => !p.dead);
     const desired = calculateShapeParticleCount(points, cw, ch);
@@ -1934,14 +2364,6 @@
       return a.x - b.x;
     });
 
-    // Shuffle the available living particles only, so the target assignment
-    // stays physically spread across the field instead of following birth order.
-    const pool = living.slice();
-    for (let i = pool.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [pool[i], pool[j]] = [pool[j], pool[i]];
-    }
-
     const shapeSize = Math.min(cw, ch);
     const baseCx = (W - cw) / 2 + cw / 2;
     const baseCy = (H - ch) / 2 + ch / 2;
@@ -1950,18 +2372,32 @@
     const palette = PALETTES[label] || [CONFIG.hueBase, CONFIG.hueSpread];
     const [palHue, palSpread] = palette;
 
-    for (let i = 0; i < n; i++) {
-      const pt = targetPoints[i];
-      const tx = ox + pt.x + rand(-CONFIG.shapeJitter, CONFIG.shapeJitter);
-      const ty = oy + pt.y + rand(-CONFIG.shapeJitter, CONFIG.shapeJitter);
-      const p = pool[i];
-      if (!p) break;
+    // Absolute target positions, computed once so the matcher can measure
+    // real distances in screen space.
+    const absTargets = targetPoints.map(pt => ({
+      x: ox + pt.x + rand(-CONFIG.shapeJitter, CONFIG.shapeJitter),
+      y: oy + pt.y + rand(-CONFIG.shapeJitter, CONFIG.shapeJitter),
+      tier: pt.tier,
+      feature: pt.feature,
+    }));
+
+    // Match targets to the nearest particles. A spatial grid keeps this near
+    // O(n) instead of O(n^2) even with several hundred particles.
+    const matched = matchTargetsToParticles(absTargets, living);
+
+    for (let i = 0; i < matched.length; i++) {
+      const p = matched[i].particle;
+      const t = matched[i].target;
+      if (!p) continue;
 
       p.swarm = null;
-      p.tx = tx;
-      p.ty = ty;
+      p.tx = t.x;
+      p.ty = t.y;
       p.arrived = false;
-      p.targetDelay = rand(0, CONFIG.shapeDelayMax);
+      p.inFormation = true;
+      // Particles that were already in a formation keep their stagger so the
+      // transition stays continuous; fresh ones get a new random delay.
+      p.targetDelay = p.tier ? p.targetDelay * 0.5 : rand(0, CONFIG.shapeDelayMax);
       p.targetSeed = rand(0, Math.PI * 2);
       // Blend toward the palette rather than snapping, so the field's own
       // colour still shows through and the transition is not jarring.
@@ -1970,29 +2406,44 @@
       // The tier decides how prominent this particle is in the silhouette:
       // the outline is the lit contour, the detail band gives it thickness,
       // and the interior stays dim so the shape reads as a hollow form.
-      p.tier = pt.tier;
-      p.edge = pt.tier === 'edge';
-      p.edgeBoost = pt.tier === 'edge' ? rand(0.75, 1.0)
-                  : pt.tier === 'detail' ? rand(0.30, 0.55)
+      p.tier = t.tier;
+      p.edge = t.tier === 'edge';
+      p.edgeBoost = t.tier === 'edge' ? rand(0.75, 1.0)
+                  : t.tier === 'detail' ? rand(0.30, 0.55)
                   : 0;
 
-      // Preserve existing momentum, but bend it toward the formation rather
-      // than launching every particle from an artificial starting velocity.
-      const dx = tx - p.x;
-      const dy = ty - p.y;
+      // Nudge existing momentum toward the new target instead of launching the
+      // particle from an artificial velocity. Because the target is now the
+      // nearest one, this nudge is small and the motion stays smooth.
+      const dx = t.x - p.x;
+      const dy = t.y - p.y;
       const d = Math.hypot(dx, dy) || 1;
-      const tangential = rand(-1, 1) * 1.3;
-      p.vx += (dx / d) * rand(0.15, 0.7) - (dy / d) * tangential;
-      p.vy += (dy / d) * rand(0.15, 0.7) + (dx / d) * tangential;
+      const tangential = rand(-1, 1) * 0.6;
+      p.vx += (dx / d) * rand(0.05, 0.25) - (dy / d) * tangential;
+      p.vy += (dy / d) * rand(0.05, 0.25) + (dx / d) * tangential;
     }
 
-    // Everything not selected for the silhouette stays free.
-    const selected = new Set(pool.slice(0, n));
+    // Everything not selected for the silhouette stays free. Particles that
+    // were in the previous shape are released gently rather than flung.
+    const selected = new Set(matched.map(m => m.particle));
     for (const p of particles) {
       if (!selected.has(p)) {
+        if (p.tx !== null) {
+          // ease the outgoing particle away from the shape instead of a burst
+          const dx = p.x - baseCx;
+          const dy = p.y - baseCy;
+          const d = Math.hypot(dx, dy) || 1;
+          const drift = rand(0.25, 0.8);
+          p.vx += (dx / d) * drift;
+          p.vy += (dy / d) * drift;
+        }
         p.tx = null;
         p.ty = null;
         p.arrived = false;
+        p.inFormation = false;
+        p.tier = null;
+        p.edge = false;
+        p.edgeBoost = 0;
       }
     }
 
@@ -2005,30 +2456,113 @@
       cx: baseCx,
       cy: baseCy,
       size: shapeSize,
-      particleCount: n,
+      particleCount: matched.length,
       seed: rand(0, Math.PI * 2),
+      dissolving: false,
+      dissolveAge: 0,
     };
     shapeEl.textContent = label;
+    shapeEl.style.opacity = '';
   }
 
-  function clearShape() {
-    for (const p of particles) {
-      if (p.tx !== null) {
-        const dx = p.x - W / 2;
-        const dy = p.y - H / 2;
-        const d = Math.hypot(dx, dy) || 1;
-        const burst = rand(1.0, 3.0);
-        p.vx += (dx / d) * burst;
-        p.vy += (dy / d) * burst;
-      }
-      p.tx = null;
-      p.ty = null;
-      p.arrived = false;
-      p.targetDelay = 0;
-      p.tier = null;
-      p.edge = false;
-      p.edgeBoost = 0;
+  // Greedy nearest-neighbour matching between target points and particles.
+  // Targets are processed in a spatially coherent order and each claims the
+  // closest still-free particle, so the resulting assignment is local: no
+  // particle has to travel across the whole field to reach its new home.
+  function matchTargetsToParticles(targets, pool) {
+    if (!pool.length) return targets.map(t => ({ target: t, particle: null }));
+
+    // Bucket particles into a coarse grid for fast nearest lookups.
+    const cell = 90;
+    const grid = new Map();
+    const gkey = (cx, cy) => cx * 100003 + cy;
+    for (const p of pool) {
+      const k = gkey(Math.floor(p.x / cell), Math.floor(p.y / cell));
+      let b = grid.get(k);
+      if (!b) { b = []; grid.set(k, b); }
+      b.push(p);
     }
+
+    const taken = new Set();
+    const result = [];
+
+    // Search outward ring by ring until we find a free particle. The radius
+    // grows so a target in a sparse region still finds a match.
+    const findNearest = (tx, ty) => {
+      const cx = Math.floor(tx / cell), cy = Math.floor(ty / cell);
+      let best = null, bestD2 = Infinity;
+      for (let ring = 0; ring <= 6; ring++) {
+        for (let ox = -ring; ox <= ring; ox++) {
+          for (let oy = -ring; oy <= ring; oy++) {
+            // only the shell of the ring is new
+            if (ring > 0 && Math.abs(ox) !== ring && Math.abs(oy) !== ring) continue;
+            const b = grid.get(gkey(cx + ox, cy + oy));
+            if (!b) continue;
+            for (const p of b) {
+              if (taken.has(p)) continue;
+              const dx = p.x - tx, dy = p.y - ty;
+              const d2 = dx * dx + dy * dy;
+              if (d2 < bestD2) { bestD2 = d2; best = p; }
+            }
+          }
+        }
+        // Once something is found, one more ring guarantees the true nearest.
+        if (best && ring >= 1) break;
+      }
+      return best;
+    };
+
+    for (const t of targets) {
+      const p = findNearest(t.x, t.y);
+      if (p) taken.add(p);
+      result.push({ target: t, particle: p });
+    }
+    return result;
+  }
+
+  // Hand a single particle back to the free field. `gentle` eases it out of
+  // the formation with a small outward drift; the hard path is only used when
+  // the user explicitly clears the shape and we want an immediate response.
+  function releaseParticle(p, gentle) {
+    if (p.tx !== null) {
+      const dx = p.x - (shape ? shape.cx : W / 2);
+      const dy = p.y - (shape ? shape.cy : H / 2);
+      const d = Math.hypot(dx, dy) || 1;
+      // A gentle release nudges the particle along its own outward direction
+      // so it peels away from the silhouette instead of exploding from it.
+      const push = gentle ? rand(0.15, 0.55) : rand(1.0, 3.0);
+      p.vx += (dx / d) * push;
+      p.vy += (dy / d) * push;
+    }
+    p.tx = null;
+    p.ty = null;
+    p.arrived = false;
+    p.targetDelay = 0;
+    p.inFormation = false;
+    p.tier = null;
+    p.edge = false;
+    p.edgeBoost = 0;
+  }
+
+  // Begin melting the formation back into the ambient flow. Particles are
+  // released in a staggered wave over CONFIG.shapeDissolve seconds, so the
+  // silhouette thins out from its edges inward rather than vanishing at once.
+  function dissolveShape() {
+    if (!shape || shape.dissolving) return;
+    shape.dissolving = true;
+    shape.dissolveAge = 0;
+    // Give every particle its own release moment, biased so the outline goes
+    // first and the core lingers - that reads as the shape "breathing out".
+    for (const p of particles) {
+      if (p.tx === null) continue;
+      const edgeBias = p.tier === 'edge' ? 0 : p.tier === 'detail' ? 0.25 : 0.5;
+      p.releaseAt = edgeBias + rand(0, 0.5);
+    }
+  }
+
+  // Immediate clear: used when the user empties the input or switches away.
+  function clearShape() {
+    for (const p of particles) releaseParticle(p, false);
     shape = null;
     shapeEl.textContent = 'free';
   }
@@ -2056,7 +2590,27 @@
     shape.cx = clamp(tx, marginX, w - marginX);
     shape.cy = clamp(ty, marginY, h - marginY);
 
-    if (shape.age >= shape.hold) clearShape();
+    // --- dissolve phase --------------------------------------------------
+    // Once the hold expires the shape does not pop: it melts. Each particle
+    // waits for its own release moment, then eases back into free flight.
+    if (shape.dissolving) {
+      shape.dissolveAge += dt / 60;
+      const progress = shape.dissolveAge / CONFIG.shapeDissolve;
+      for (const p of particles) {
+        if (p.tx === null) continue;
+        if (progress >= p.releaseAt) releaseParticle(p, true);
+      }
+      // Fade the label out with the formation.
+      shapeEl.style.opacity = String(clamp(1 - progress, 0, 1));
+      if (progress >= 1) {
+        shape = null;
+        shapeEl.textContent = 'free';
+        shapeEl.style.opacity = '';
+      }
+      return;
+    }
+
+    if (shape.age >= shape.hold) dissolveShape();
   }
 
   // ---------------------------------------------------------------- resize
