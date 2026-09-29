@@ -1,0 +1,2319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Particle Field</title>
+<style>
+  :root {
+    --bg: #05060a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: crosshair;
+  }
+  .hud {
+    position: fixed;
+    left: 16px;
+    bottom: 14px;
+    color: rgba(180, 210, 255, 0.55);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    pointer-events: none;
+    user-select: none;
+    line-height: 1.7;
+  }
+  .hud b { color: rgba(140, 200, 255, 0.9); font-weight: 600; }
+  .title {
+    position: fixed;
+    left: 16px;
+    top: 14px;
+    color: rgba(180, 210, 255, 0.35);
+    font-size: 11px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    pointer-events: none;
+    user-select: none;
+  }
+  .prompt {
+    position: fixed;
+    left: 50%;
+    bottom: 22px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px 8px 14px;
+    border-radius: 999px;
+    background: rgba(12, 18, 32, 0.72);
+    border: 1px solid rgba(90, 130, 190, 0.35);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+    z-index: 10;
+  }
+  .prompt input {
+    width: min(46vw, 340px);
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #dbe9ff;
+    font: inherit;
+    font-size: 13px;
+    letter-spacing: 0.06em;
+  }
+  .prompt input::placeholder { color: rgba(150, 180, 220, 0.45); }
+  .prompt button {
+    border: none;
+    border-radius: 999px;
+    padding: 7px 14px;
+    background: rgba(90, 150, 240, 0.22);
+    color: #cfe2ff;
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .prompt button:hover { background: rgba(90, 150, 240, 0.4); }
+  .prompt button:active { background: rgba(90, 150, 240, 0.55); }
+  .chips {
+    position: fixed;
+    right: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+    width: min(150px, 22vw);
+    max-height: 72vh;
+    overflow-y: auto;
+    padding: 8px;
+    border-radius: 14px;
+    background: rgba(5, 8, 16, 0.28);
+    backdrop-filter: blur(6px);
+    scrollbar-width: thin;
+    z-index: 10;
+  }
+  .chips button {
+    border: 1px solid rgba(90, 130, 190, 0.28);
+    border-radius: 999px;
+    padding: 6px 9px;
+    background: rgba(12, 18, 32, 0.58);
+    color: rgba(180, 210, 255, 0.68);
+    font: inherit;
+    font-size: 9px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .15s ease, border-color .15s ease, color .15s ease;
+  }
+  .chips button:hover {
+    color: #dbe9ff;
+    border-color: rgba(120, 180, 255, 0.6);
+    background: rgba(30, 55, 90, 0.68);
+  }
+  @media (max-width: 700px) {
+    .chips {
+      right: 8px;
+      top: auto;
+      bottom: 78px;
+      transform: none;
+      width: calc(100vw - 16px);
+      max-width: none;
+      max-height: 58px;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .chips button.active { color: #e9f4ff; border-color: rgba(130, 195, 255, 0.85); background: rgba(70, 130, 220, 0.26); }
+    .chips button { flex: 0 0 auto; }
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div class="title">Particle Field</div>
+<div class="hud">
+  <div>move <b>cursor</b> to attract &middot; choose a <b>shape</b> below</div>
+  <div><b id="fps">--</b> fps &middot; <b id="count">--</b> particles &middot; <b id="shape">free</b></div>
+</div>
+<div class="chips" id="chips"></div>
+<form class="prompt" id="prompt">
+  <input id="word" type="text" placeholder="type a word or emoji — rabbit, cat, star…" autocomplete="off" spellcheck="false" />
+  <button type="submit">Form</button>
+</form>
+
+<script>
+(() => {
+  'use strict';
+
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const fpsEl = document.getElementById('fps');
+  const countEl = document.getElementById('count');
+  const shapeEl = document.getElementById('shape');
+  const promptForm = document.getElementById('prompt');
+  const wordInput = document.getElementById('word');
+  const chipsEl = document.getElementById('chips');
+
+  let W = 0, H = 0, DPR = 1;
+
+  // ---------------------------------------------------------------- config
+  const CONFIG = {
+    baseCount: 420,          // healthy field population; shapes use only these living particles
+    maxCount: 900,           // hard cap
+    mouseRadius: 190,        // influence radius of the cursor
+    mouseRadiusSq: 190 * 190,
+    attract: 0.055,          // pull strength toward cursor
+    swirl: 0.9,              // tangential (orbital) force
+    friction: 0.965,
+    maxSpeed: 3.4,
+    wander: 0.055,           // constant self-propulsion (keeps them moving)
+    minSpeed: 0.35,          // never let a particle stall
+    mergeDist: 9,            // particles this close are considered touching
+    mergeDistSq: 81,
+    bounce: 0.58,            // softer restitution: collisions feel less like billiards
+    spawnOnContact: 0,       // collisions no longer breed new particles
+    cohesion: 0.020,         // pull toward the local formation centroid
+    cohesionRadius: 150,     // how far formation influence reaches
+    cohesionRadiusSq: 150 * 150,
+    netDist: 96,             // max distance for a communication link
+    netDistSq: 96 * 96,
+    netBreakDist: 128,       // links snap once stretched past this
+    netBreakDistSq: 128 * 128,
+    netFadeIn: 0.16,         // how fast a new link brightens
+    netFadeOut: 0.09,        // how fast a broken link dims out
+    netStrength: 0.34,       // base opacity of a link
+    netBoost: 0.42,          // extra opacity from cluster size
+    netCluster: 14,          // particles needed for full network strength
+    burstCount: 26,
+    burstPower: 7.5,
+    hueBase: 205,            // base hue (blue)
+    hueSpread: 90,           // hue variation across particles
+    trailAlpha: 0.22,        // background fade per frame (motion trails)
+    contactFlash: 0.45,      // seconds the yellow contact glow lasts
+    contactHue: 52,          // hue of the contact glow (yellow)
+    lifeMin: 8,              // shortest lifespan of a particle (seconds)
+    lifeMax: 18,             // longest lifespan of a particle (seconds)
+    fadeIn: 0.9,             // seconds a particle takes to fade in
+    fadeOut: 1.6,            // seconds a particle takes to fade out
+    respawnRate: 1.10,       // particles per second added back to the field
+
+    // --- swarm behaviour -------------------------------------------
+    swarmCount: 5,           // number of roaming swarms
+    swarmSize: 26,           // particles per swarm
+    swarmSpeed: 2.6,         // how fast a swarm's core travels
+    swarmTurn: 0.05,         // how sharply a swarm can change heading
+    swarmRadius: 46,         // spread of particles around the swarm core
+    swarmRadiusSq: 46 * 46,
+    swarmPull: 0.055,        // pull toward the swarm core
+    swarmOrbit: 0.06,        // tangential drift around the core
+    swarmMaxSpeed: 7.5,      // swarms move much faster than free particles
+    swarmLife: 22,           // seconds a swarm lives before dispersing
+
+    // --- word shapes ------------------------------------------------
+    shapeCount: 520,         // particles used to draw a silhouette
+    shapeDamp: 0.90,         // velocity damping while forming
+    shapeMaxSpeed: 7.0,       // cap while forming
+    shapeHold: 11.5,            // seconds the shape holds before dispersing
+    shapeJitter: 0.35,       // px of noise on each target point
+    shapeDelayMax: 0.95,     // stagger the arrival so the formation grows organically
+    shapeSteer: 0.072,       // how quickly particles bend toward their target velocity
+    shapeOrbit: 0.95,        // temporary orbital flow around the forming shape
+    shapeNoise: 0.30,        // subtle turbulence during travel
+    shapeSettle: 0.055,      // velocity damping when very close to the target
+    shapeMinParticles: 120,  // minimum particles for a readable formation
+    shapeMaxParticles: 340,  // do not consume the whole field unless needed
+    shapeParticleSpacing: 15, // approximate visual spacing between shape particles
+    shapeMotion: 0.92,       // overall shape movement response
+    shapeDeform: 1.0,        // strength of local shape deformation
+  };
+
+  // ---------------------------------------------------------------- state
+  const particles = [];
+  const swarms = [];
+  const mouse = { x: -9999, y: -9999, active: false, down: false };
+  let time = 0;
+  let last = performance.now();
+  let fpsAccum = 0, fpsFrames = 0;
+  let spawnAccum = 0;   // fractional respawn credit, so births are gradual
+  let shape = null;     // active word formation, or null when free-roaming
+
+  // ---------------------------------------------------------------- utils
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+  // Monotonic id source. Declared before Particle so the constructor can never
+  // hit the temporal dead zone if a particle is created earlier than boot.
+  let nextId = 1;
+
+  // ---------------------------------------------------------------- shape behaviours
+  // Every per-shape motion lives here, in one place. Each entry may define:
+  //   local(u, v, lx, ly, seed, wave) -> { dx, dy, angle, scale }
+  //     per-particle deformation, in the shape's own local space
+  //   centroid(t, seed, w, h) -> { dx, dy }
+  //     how the whole formation drifts across the viewport
+  //   effects(ctx, x, y, time, pulse)
+  //     decorative particles drawn behind the formation
+  // Adding a new shape is now a single entry instead of edits in three places.
+  const SHAPE_BEHAVIORS = {
+    rocket: {
+      local(u, v, lx, ly, seed, wave) {
+        // Flight motion + body lift + a living flame region at the bottom.
+        const flame = clamp((v - 0.48) / 0.52, 0, 1);
+        return {
+          angle: Math.sin(wave * 0.72) * 0.028,
+          dx: Math.sin(wave * 0.44) * 72 + flame * Math.sin(wave * 9.0 + seed * 2.0) * 4,
+          dy: Math.sin(wave * 0.96) * 17 + flame * (3 + 7 * Math.sin(wave * 7.5 + seed) * 0.5),
+        };
+      },
+      centroid(t, seed, w, h) {
+        return {
+          dx: Math.sin(t * 0.44 + seed) * Math.min(90, w * 0.08),
+          dy: Math.sin(t * 0.91 + seed * 1.7) * Math.min(28, h * 0.035),
+        };
+      },
+      effects(ctx, x, y, time) {
+        // Soft exhaust plume below the moving rocket.
+        const baseY = y + Math.min(W, H) * 0.24 + 8 + Math.sin(time * 1.18) * 5;
+        for (let i = 0; i < 22; i++) {
+          const a = time * (2 + i * 0.03) + i * 2.4;
+          const rise = (i / 22) * 70 + ((time * 55 + i * 13) % 30);
+          const px = x + Math.sin(a) * (4 + rise * 0.08);
+          const py = baseY + rise;
+          const r = Math.max(0.5, 2.8 - rise * 0.025);
+          ctx.fillStyle = `hsla(${35 + (i % 3) * 18}, 100%, 68%, ${0.18 * (1 - rise / 100)})`;
+          ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.fill();
+        }
+      },
+    },
+
+    fish: {
+      local(u, v, lx, ly, seed, wave) {
+        // A travelling wave through the body, strongest toward the tail.
+        const tail = clamp((-u + 0.05) / 1.05, 0, 1);
+        const waveValue = Math.sin(wave * 4.2 - lx * 0.035 + seed) * tail;
+        return {
+          angle: Math.sin(wave * 0.75) * 0.022,
+          dx: Math.cos(wave * 2.1 + seed) * tail * 2.2 + Math.sin(wave * 0.48) * 48,
+          dy: waveValue * 10 * CONFIG.shapeDeform + Math.sin(wave * 0.95) * 5,
+        };
+      },
+      centroid(t, seed, w, h) {
+        return {
+          dx: Math.sin(t * 0.42 + seed) * Math.min(80, w * 0.07),
+          dy: Math.sin(t * 0.88) * Math.min(18, h * 0.025),
+        };
+      },
+      effects(ctx, x, y, time) {
+        // Small bubbles trailing behind aquatic forms.
+        for (let i = 0; i < 9; i++) {
+          const phase = i * 1.7;
+          const bx = x - 80 - ((time * (10 + i) + i * 37) % 80);
+          const by = y + Math.sin(time * 1.2 + phase) * 18 + i * 3;
+          const r = 1 + (i % 3) * 0.7;
+          ctx.strokeStyle = `hsla(195, 90%, 75%, ${0.18 - i * 0.012})`;
+          ctx.lineWidth = 0.8;
+          ctx.beginPath(); ctx.arc(bx, by, r, 0, Math.PI * 2); ctx.stroke();
+        }
+      },
+    },
+
+    bird: {
+      local(u, v, lx, ly, seed, wave) {
+        // A gentle wingbeat: outer wing particles travel more than the body.
+        const wing = clamp(Math.abs(u) * 1.15, 0, 1) * clamp(1 - Math.abs(v) * 0.9, 0, 1);
+        const flap = Math.sin(wave * 3.0 + seed) * wing;
+        return {
+          angle: Math.sin(wave * 0.7) * 0.035,
+          dx: Math.sign(lx || 1) * flap * 2.5,
+          dy: flap * 8 * CONFIG.shapeDeform + Math.sin(wave * 0.85) * 5,
+        };
+      },
+      centroid(t, seed, w, h) {
+        return {
+          dx: Math.sin(t * 0.55 + seed) * Math.min(38, w * 0.035),
+          dy: Math.sin(t * 1.05 + seed) * Math.min(20, h * 0.025),
+        };
+      },
+      effects(ctx, x, y, time, pulse) {
+        // Tiny surrounding particles orbiting the living form.
+        for (let i = 0; i < 7; i++) {
+          const a = time * (0.35 + i * 0.03) + i * 0.9;
+          const rr = 105 + Math.sin(time * 1.2 + i) * 10;
+          const px = x + Math.cos(a) * rr;
+          const py = y + Math.sin(a) * rr * 0.55;
+          ctx.fillStyle = `hsla(${195 + i * 12}, 90%, 75%, ${0.12 + pulse * 0.05})`;
+          ctx.beginPath(); ctx.arc(px, py, 1.1, 0, Math.PI * 2); ctx.fill();
+        }
+      },
+    },
+
+    butterfly: {
+      local(u, v, lx, ly, seed, wave) {
+        // Opposing flutter on the two wings so it reads as a living insect.
+        const wing = clamp(Math.abs(u), 0, 1) * clamp(1 - Math.abs(v) * 0.65, 0, 1);
+        const flap = Math.sin(wave * 4.5 + seed) * wing;
+        return {
+          dx: Math.sign(lx || 1) * flap * 6,
+          dy: flap * 9 * (0.7 + 0.3 * Math.abs(u)) + Math.sin(wave * 1.05) * 5,
+        };
+      },
+      centroid(t, seed, w, h) {
+        return {
+          dx: Math.sin(t * 0.55 + seed) * Math.min(38, w * 0.035),
+          dy: Math.sin(t * 1.05 + seed) * Math.min(20, h * 0.025),
+        };
+      },
+      effects(ctx, x, y, time, pulse) {
+        for (let i = 0; i < 7; i++) {
+          const a = time * (0.35 + i * 0.03) + i * 0.9;
+          const rr = 105 + Math.sin(time * 1.2 + i) * 10;
+          const px = x + Math.cos(a) * rr;
+          const py = y + Math.sin(a) * rr * 0.55;
+          ctx.fillStyle = `hsla(${195 + i * 12}, 90%, 75%, ${0.12 + pulse * 0.05})`;
+          ctx.beginPath(); ctx.arc(px, py, 1.1, 0, Math.PI * 2); ctx.fill();
+        }
+      },
+    },
+
+    tree: {
+      local(u, v, lx, ly, seed, wave) {
+        // Wind passes through the canopy; the trunk barely moves.
+        const top = clamp((-v + 0.05) / 1.05, 0, 1);
+        return {
+          angle: Math.sin(wave * 0.62) * 0.018,
+          dx: Math.sin(wave * 0.9 + v * 2.5) * top * 7 * CONFIG.shapeDeform,
+        };
+      },
+    },
+
+    leaf: {
+      local(u, v, lx, ly, seed, wave) {
+        const top = clamp((-v + 0.1) / 1.1, 0, 1);
+        return {
+          angle: Math.sin(wave * 1.05) * (0.035 + top * 0.035),
+          dx: Math.sin(wave * 1.2 + v * 3) * top * 5,
+          dy: Math.cos(wave * 1.0 + u * 2) * top * 2,
+        };
+      },
+      centroid(t, seed, w, h) {
+        return {
+          dx: Math.sin(t * 0.55 + seed) * Math.min(24, w * 0.02),
+          dy: Math.cos(t * 0.42) * Math.min(14, h * 0.018),
+        };
+      },
+    },
+
+    car: {
+      local(u, v, lx, ly, seed, wave) {
+        // Small suspension bob rather than rigid translation.
+        const body = clamp((v + 0.2) / 1.2, 0, 1);
+        return {
+          angle: Math.sin(wave * 0.65) * 0.015,
+          dx: Math.sin(wave * 0.55) * 55,
+          dy: Math.sin(wave * 1.5) * 3 + Math.sin(wave * 3.1 + seed) * body * 1.8,
+        };
+      },
+      centroid(t, seed, w, h) {
+        return {
+          dx: Math.sin(t * 0.35 + seed) * Math.min(72, w * 0.06),
+          dy: Math.sin(t * 0.95) * Math.min(10, h * 0.015),
+        };
+      },
+      effects(ctx, x, y, time) {
+        // Faint dust / heat wake behind the car.
+        for (let i = 0; i < 14; i++) {
+          const px = x - 110 - ((time * 24 + i * 19) % 55);
+          const py = y + 45 + Math.sin(time * 1.5 + i) * 8;
+          ctx.fillStyle = `hsla(35, 35%, 75%, ${0.06 + (i % 4) * 0.015})`;
+          ctx.beginPath(); ctx.arc(px, py, 1 + (i % 3), 0, Math.PI * 2); ctx.fill();
+        }
+      },
+    },
+
+    plane: {
+      local(u, v, lx, ly, seed, wave) {
+        const body = clamp((v + 0.2) / 1.2, 0, 1);
+        return {
+          angle: Math.sin(wave * 0.65) * 0.015,
+          dx: Math.sin(wave * 0.55) * 55,
+          dy: Math.sin(wave * 1.5) * 3 + Math.sin(wave * 3.1 + seed) * body * 1.8,
+        };
+      },
+      centroid(t, seed, w, h) {
+        return {
+          dx: Math.sin(t * 0.35 + seed) * Math.min(72, w * 0.06),
+          dy: Math.sin(t * 0.95) * Math.min(10, h * 0.015),
+        };
+      },
+    },
+
+    boat: {
+      local(u, v, lx, ly, seed, wave) {
+        return {
+          angle: Math.sin(wave * 0.9) * 0.04,
+          dx: Math.sin(wave * 0.36) * 28,
+          dy: Math.sin(wave * 1.0) * 6,
+        };
+      },
+      centroid(t, seed, w, h) {
+        return {
+          dx: Math.sin(t * 0.28 + seed) * Math.min(55, w * 0.045),
+          dy: Math.sin(t * 0.9) * Math.min(22, h * 0.03),
+        };
+      },
+      effects(ctx, x, y, time, pulse) {
+        ctx.strokeStyle = 'rgba(130,210,255,0.20)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 4; i++) {
+          const yy = y + 48 + i * 7;
+          const span = 25 + i * 12 + pulse * 8;
+          ctx.beginPath();
+          ctx.moveTo(x - span, yy);
+          ctx.quadraticCurveTo(x, yy + Math.sin(time * 2 + i) * 4, x + span, yy);
+          ctx.stroke();
+        }
+      },
+    },
+
+    heart: {
+      local(u, v, lx, ly, seed, wave) {
+        return {
+          scale: Math.sin(wave * 2.2) * 0.020,
+          dy: Math.sin(wave * 2.2 + seed) * 1.5,
+        };
+      },
+      effects(ctx, x, y, time, pulse) {
+        ctx.strokeStyle = `rgba(255,110,150,${0.05 + pulse * 0.04})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(x, y, 110 + pulse * 8, 0, Math.PI * 2); ctx.stroke();
+      },
+    },
+
+    star: {
+      local(u, v, lx, ly, seed, wave) {
+        const shimmer = Math.sin(wave * 3.0 + seed) * 1.3;
+        return { angle: wave * 0.045, dx: shimmer * u, dy: shimmer * v };
+      },
+      effects(ctx, x, y, time, pulse) {
+        for (let i = 0; i < 14; i++) {
+          const a = i * Math.PI * 2 / 14 + time * 0.12;
+          const rr = 90 + Math.sin(time * 1.5 + i) * 12;
+          const px = x + Math.cos(a) * rr;
+          const py = y + Math.sin(a) * rr;
+          ctx.fillStyle = `hsla(48, 100%, 78%, ${0.08 + pulse * 0.06})`;
+          ctx.beginPath(); ctx.arc(px, py, 1.2 + pulse, 0, Math.PI * 2); ctx.fill();
+        }
+      },
+    },
+
+    sun: {
+      local(u, v, lx, ly, seed, wave) {
+        const shimmer = Math.sin(wave * 3.0 + seed) * 1.3;
+        return { angle: wave * 0.045, dx: shimmer * u, dy: shimmer * v };
+      },
+      effects(ctx, x, y, time, pulse) {
+        for (let i = 0; i < 14; i++) {
+          const a = i * Math.PI * 2 / 14 + time * 0.12;
+          const rr = 90 + Math.sin(time * 1.5 + i) * 12;
+          const px = x + Math.cos(a) * rr;
+          const py = y + Math.sin(a) * rr;
+          ctx.fillStyle = `hsla(48, 100%, 78%, ${0.08 + pulse * 0.06})`;
+          ctx.beginPath(); ctx.arc(px, py, 1.2 + pulse, 0, Math.PI * 2); ctx.fill();
+        }
+      },
+    },
+
+    moon: {
+      local(u, v, lx, ly, seed, wave) {
+        const shimmer = Math.sin(wave * 3.0 + seed) * 1.3;
+        return { angle: wave * 0.045, dx: shimmer * u, dy: shimmer * v };
+      },
+    },
+
+    cloud: {
+      local(u, v, lx, ly, seed, wave) {
+        return {
+          dx: Math.sin(wave * 0.24) * 16,
+          dy: Math.sin(wave * 0.7 + seed) * 3,
+        };
+      },
+      centroid(t, seed, w, h) {
+        return {
+          dx: Math.sin(t * 0.22 + seed) * Math.min(55, w * 0.045),
+          dy: Math.sin(t * 0.55) * Math.min(12, h * 0.018),
+        };
+      },
+    },
+
+    bee: {
+      local(u, v, lx, ly, seed, wave) {
+        const wing = clamp(1 - Math.abs(v) * 1.8, 0, 1) * clamp(Math.abs(u) * 1.5, 0, 1);
+        const flap = Math.sin(wave * 8.0 + seed) * wing;
+        return {
+          angle: Math.sin(wave * 1.3) * 0.05,
+          dx: Math.sin(wave * 2.2 + seed) * 6,
+          dy: flap * 5,
+        };
+      },
+    },
+
+    turtle: {
+      local(u, v, lx, ly, seed, wave) {
+        return {
+          dx: Math.sin(wave * 0.45) * 18,
+          dy: Math.sin(wave * 0.8) * 2.5,
+        };
+      },
+    },
+
+    balloon: {
+      local(u, v, lx, ly, seed, wave) {
+        return {
+          angle: Math.sin(wave * 0.7) * 0.025,
+          dx: Math.sin(wave * 0.55) * 28,
+          dy: Math.sin(wave * 0.8) * 10,
+        };
+      },
+      centroid(t, seed, w, h) {
+        return {
+          dx: Math.sin(t * 0.48 + seed) * Math.min(45, w * 0.035),
+          dy: Math.sin(t * 0.78 + seed) * Math.min(36, h * 0.05),
+        };
+      },
+    },
+
+    music: {
+      local(u, v, lx, ly, seed, wave) {
+        return {
+          angle: Math.sin(wave * 1.1) * 0.025,
+          dy: Math.sin(wave * 2.0 + seed) * 3,
+        };
+      },
+    },
+
+    smile: {
+      local(u, v, lx, ly, seed, wave) {
+        return { scale: Math.sin(wave * 1.7) * 0.009 };
+      },
+    },
+  };
+
+  // Shared behaviour for aquatic forms and for the generic fallback.
+  SHAPE_BEHAVIORS.dolphin = SHAPE_BEHAVIORS.fish;
+  SHAPE_BEHAVIORS.whale = SHAPE_BEHAVIORS.fish;
+  SHAPE_BEHAVIORS.spaceship = SHAPE_BEHAVIORS.rocket;
+
+  const GENERIC_BEHAVIOR = {
+    local(u, v, lx, ly, seed, wave) {
+      // Generic organic drift for remaining symbols/objects.
+      return {
+        angle: Math.sin(wave * 0.55 + seed) * 0.012,
+        dx: Math.sin(wave * 0.42 + seed) * 8,
+        dy: Math.sin(wave * 0.75 + seed * 1.7) * 3,
+      };
+    },
+  };
+
+  // ---------------------------------------------------------------- particle
+  class Particle {
+    constructor(x, y, opts = {}) {
+      this.x = x ?? rand(0, W);
+      this.y = y ?? rand(0, H);
+      const a = rand(0, Math.PI * 2);
+      const s = opts.speed ?? rand(0.15, 0.85);
+      this.vx = Math.cos(a) * s;
+      this.vy = Math.sin(a) * s;
+      this.r = opts.r ?? rand(0.7, 2.4);
+      this.id = nextId++;
+      this.hue = CONFIG.hueBase + rand(-CONFIG.hueSpread / 2, CONFIG.hueSpread / 2);
+      // every particle is mortal: it fades in, lives a while, then fades out
+      this.maxLife = opts.life ?? rand(CONFIG.lifeMin, CONFIG.lifeMax);
+      this.age = 0;
+      this.life = 1;
+      this.mass = this.r * this.r * 0.6 + 0.4;
+      this.phase = rand(0, Math.PI * 2);
+      this.pulse = rand(0.6, 1.6);
+      this.energy = 0;                   // 0..1, brightens near cursor
+      this.wanderAngle = rand(0, Math.PI * 2);
+      this.wanderRate = rand(0.6, 1.8);  // how quickly its heading drifts
+      this.drift = rand(0.7, 1.3);       // per-particle wander strength
+      this.absorbed = 0;                 // how many collisions it has been in
+      this.flash = 0;                    // 0..1 pop on contact
+      this.contact = 0;                  // seconds of yellow glow remaining
+      this.dead = false;                 // removed from the field
+      this.swarm = null;                 // swarm this particle belongs to
+      this.tx = null;                    // target point when forming a shape
+      this.ty = null;
+      this.targetDelay = 0;              // staggered start time for formation motion
+      this.targetSeed = rand(0, Math.PI * 2);
+      this.arrived = false;              // has it reached its shape target
+      this.tier = null;                  // 'edge' | 'detail' | 'fill' while in a shape
+      this.edge = false;                 // sits on the silhouette outline
+      this.edgeBoost = 0;                // 0..1 extra brightness for outline particles
+    }
+
+    getAnimatedTarget() {
+      if (!shape || this.tx === null) return { x: this.tx, y: this.ty };
+
+      const cx = shape.cx, cy = shape.cy;
+      const lx = this.tx - shape.baseCx;
+      const ly = this.ty - shape.baseCy;
+      const u = clamp(lx / Math.max(1, shape.size * 0.5), -1, 1);
+      const v = clamp(ly / Math.max(1, shape.size * 0.5), -1, 1);
+
+      const seed = this.targetSeed;
+      const wave = time;
+
+      // Every formation gets a very small, slow "breathing" motion. This is
+      // deliberately tiny: the silhouette should remain recognisable while
+      // individual particles continue to move like matter rather than pixels.
+      let scale = 1 + Math.sin(wave * 1.15 + seed) * 0.006 * CONFIG.shapeDeform;
+
+      // One lookup drives all per-shape deformation.
+      const behavior = SHAPE_BEHAVIORS[shape.text] || GENERIC_BEHAVIOR;
+      const local = behavior.local ? behavior.local(u, v, lx, ly, seed, wave) : null;
+      let dx = 0, dy = 0, angle = 0;
+      if (local) {
+        dx = local.dx || 0;
+        dy = local.dy || 0;
+        angle = local.angle || 0;
+        if (local.scale) scale += local.scale;
+      }
+
+      const c = Math.cos(angle), si = Math.sin(angle);
+      const rx = (lx * c - ly * si) * scale;
+      const ry = (lx * si + ly * c) * scale;
+      return { x: cx + rx + dx, y: cy + ry + dy };
+    }
+
+    step(dt) {
+      // --- shape mode: fluid / velocity-based formation -------------------
+      // Particles do not snap or point directly at the final pixel. They first
+      // get caught by a moving flow around the target, then progressively steer
+      // into their exact destination. This creates visible, organic motion.
+      if (this.tx !== null) {
+        const formationAge = shape ? shape.age : 99;
+        const activeAge = formationAge - this.targetDelay;
+
+        if (activeAge <= 0) {
+          // Keep drifting naturally until this particle's formation wave arrives.
+          this.wanderAngle += Math.sin(time * 0.8 + this.targetSeed) * 0.018 * dt;
+          this.vx += Math.cos(this.wanderAngle) * 0.045 * dt;
+          this.vy += Math.sin(this.wanderAngle) * 0.045 * dt;
+          this.vx *= 0.995;
+          this.vy *= 0.995;
+          this.x += this.vx * dt;
+          this.y += this.vy * dt;
+          this.arrived = false;
+
+          // Life continues during formation. A particle can fade and die here
+          // just as it can in free flight.
+          this.age += dt / 60;
+          const remaining = this.maxLife - this.age;
+          if (remaining <= 0) { this.life = 0; this.dead = true; }
+          else if (remaining < CONFIG.fadeOut) this.life = remaining / CONFIG.fadeOut;
+          else if (this.age < CONFIG.fadeIn) this.life = this.age / CONFIG.fadeIn;
+          else this.life = 1;
+          return;
+        }
+
+        const target = this.getAnimatedTarget();
+        const dx = target.x - this.x;
+        const dy = target.y - this.y;
+        const d = Math.hypot(dx, dy);
+        const inv = 1 / Math.max(d, 0.001);
+
+        // More speed when far away, graceful braking near the target.
+        const approach = clamp(d / 260, 0, 1);
+        const desiredSpeed = 0.8 + approach * (this.targetDelay > 0.3 ? 6.8 : 7.8);
+
+        let desiredVx = dx * inv * desiredSpeed;
+        let desiredVy = dy * inv * desiredSpeed;
+
+        // Add a temporary curl around the formation centre so trajectories curve
+        // instead of looking like hundreds of straight lines.
+        if (shape && shape.cx !== undefined) {
+          const cdx = this.x - shape.cx;
+          const cdy = this.y - shape.cy;
+          const cd = Math.hypot(cdx, cdy);
+          if (cd > 1) {
+            const orbitFade = clamp(d / 180, 0, 1) * (1 - clamp(activeAge / 2.8, 0, 1));
+            const orbit = CONFIG.shapeOrbit * orbitFade;
+            desiredVx += (-cdy / cd) * orbit;
+            desiredVy += ( cdx / cd) * orbit;
+          }
+        }
+
+        // Low-amplitude turbulence keeps the cloud alive during convergence.
+        const noise = CONFIG.shapeNoise * clamp(d / 180, 0, 1);
+        desiredVx += Math.cos(time * 1.7 + this.targetSeed) * noise;
+        desiredVy += Math.sin(time * 1.45 + this.targetSeed * 1.31) * noise;
+
+        // Steer velocity rather than teleporting position.
+        const steer = clamp(CONFIG.shapeSteer * dt * (0.65 + approach * 0.8), 0, 1);
+        this.vx += (desiredVx - this.vx) * steer;
+        this.vy += (desiredVy - this.vy) * steer;
+
+        // Hard cap to keep the motion cinematic rather than explosive.
+        let sp2 = this.vx * this.vx + this.vy * this.vy;
+        const cap = CONFIG.shapeMaxSpeed;
+        if (sp2 > cap * cap) {
+          const k = cap / Math.sqrt(sp2);
+          this.vx *= k;
+          this.vy *= k;
+        }
+
+        if (d < 26) {
+          this.vx *= 1 - CONFIG.shapeSettle * dt;
+          this.vy *= 1 - CONFIG.shapeSettle * dt;
+        }
+
+        this.x += this.vx * dt;
+        this.y += this.vy * dt;
+        this.energy = Math.min(1, this.energy + 0.025 * dt);
+        const wasArrived = this.arrived;
+        this.arrived = d < 4.5;
+        // A one-frame flare the moment a particle locks into the silhouette,
+        // so the shape appears to "ignite" as it completes.
+        if (this.arrived && !wasArrived) this.flash = Math.max(this.flash, 0.85);
+        if (d < 2.2) {
+          // reuse the target already computed above instead of recomputing it
+          this.x += (target.x - this.x) * 0.14;
+          this.y += (target.y - this.y) * 0.14;
+        }
+
+        // Keep the normal birth -> life -> fade -> death cycle active even
+        // while particles are part of the silhouette.
+        this.age += dt / 60;
+        const remaining = this.maxLife - this.age;
+        if (remaining <= 0) { this.life = 0; this.dead = true; }
+        else if (remaining < CONFIG.fadeOut) this.life = remaining / CONFIG.fadeOut;
+        else if (this.age < CONFIG.fadeIn) this.life = this.age / CONFIG.fadeIn;
+        else this.life = 1;
+        return;
+      }
+
+      // --- swarm mode: chase the moving core of the swarm --------------
+      if (this.swarm) {
+        const s = this.swarm;
+        const dx = s.x - this.x;
+        const dy = s.y - this.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > 0.01) {
+          const d = Math.sqrt(d2);
+          const inv = 1 / d;
+          // pull toward the core, easing off once inside the swarm radius
+          const inside = d < CONFIG.swarmRadius ? d / CONFIG.swarmRadius : 1;
+          const pull = CONFIG.swarmPull * (0.35 + inside);
+          this.vx += dx * inv * pull * dt;
+          this.vy += dy * inv * pull * dt;
+          // tangential orbit so the swarm churns instead of collapsing
+          const orbit = CONFIG.swarmOrbit * (1 - inside * 0.5);
+          this.vx += -dy * inv * orbit * dt;
+          this.vy += dx * inv * orbit * dt;
+        }
+        // inherit a share of the swarm's own velocity so it keeps pace
+        this.vx += s.vx * 0.06 * dt;
+        this.vy += s.vy * 0.06 * dt;
+        this.energy = Math.min(1, this.energy + 0.02 * dt);
+      }
+
+      // --- constant wander: nothing ever sits still -------------------
+      this.wanderAngle += rand(-1, 1) * this.wanderRate * 0.12 * dt;
+      const w = CONFIG.wander * this.drift;
+      this.vx += Math.cos(this.wanderAngle) * w * dt;
+      this.vy += Math.sin(this.wanderAngle) * w * dt;
+
+      // --- formation cohesion: drift toward the local cluster ---------
+      if (this.cx !== undefined) {
+        const dx = this.cx - this.x;
+        const dy = this.cy - this.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > 1 && d2 < CONFIG.cohesionRadiusSq) {
+          const d = Math.sqrt(d2);
+          const f = (1 - d / CONFIG.cohesionRadius) * CONFIG.cohesion;
+          this.vx += (dx / d) * f * dt;
+          this.vy += (dy / d) * f * dt;
+        }
+      }
+
+      // --- cursor influence -------------------------------------------
+      if (mouse.active) {
+        const dx = mouse.x - this.x;
+        const dy = mouse.y - this.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < CONFIG.mouseRadiusSq && d2 > 0.01) {
+          const d = Math.sqrt(d2);
+          const falloff = 1 - d / CONFIG.mouseRadius;   // 0..1
+          const f = falloff * falloff;                  // ease
+          const inv = 1 / d;
+
+          // radial pull
+          const pull = CONFIG.attract * f * (mouse.down ? 2.4 : 1);
+          this.vx += dx * inv * pull;
+          this.vy += dy * inv * pull;
+
+          // tangential swirl (perpendicular vector)
+          const swirl = CONFIG.swirl * f * 0.06;
+          this.vx += -dy * inv * swirl;
+          this.vy += dx * inv * swirl;
+
+          this.energy = Math.min(1, this.energy + f * 0.25);
+        }
+      }
+
+      // --- integrate ---------------------------------------------------
+      this.vx *= CONFIG.friction;
+      this.vy *= CONFIG.friction;
+
+      const cap = this.swarm ? CONFIG.swarmMaxSpeed : CONFIG.maxSpeed;
+      let sp2 = this.vx * this.vx + this.vy * this.vy;
+      if (sp2 > cap * cap) {
+        const k = cap / Math.sqrt(sp2);
+        this.vx *= k;
+        this.vy *= k;
+        sp2 = cap * cap;
+      } else if (sp2 < CONFIG.minSpeed * CONFIG.minSpeed) {
+        // re-energize stalled particles so the field never freezes
+        const k = CONFIG.minSpeed / Math.max(Math.sqrt(sp2), 0.0001);
+        this.vx *= k;
+        this.vy *= k;
+      }
+
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+
+      // --- hard containment: particles never leave the frame ----------
+      const pad = this.r + 1;
+      if (this.x < pad) { this.x = pad; this.vx = Math.abs(this.vx); }
+      else if (this.x > W - pad) { this.x = W - pad; this.vx = -Math.abs(this.vx); }
+      if (this.y < pad) { this.y = pad; this.vy = Math.abs(this.vy); }
+      else if (this.y > H - pad) { this.y = H - pad; this.vy = -Math.abs(this.vy); }
+
+      // --- decay / energy relaxation ---------------------------------
+      // dt is normalised to 60fps units, so pow(base, dt) gives the same
+      // decay per second regardless of the display refresh rate.
+      this.energy *= Math.pow(0.94, dt);
+      this.flash *= Math.pow(0.90, dt);
+      // the yellow contact glow burns for exactly contactFlash seconds
+      if (this.contact > 0) this.contact = Math.max(0, this.contact - dt / 60);
+
+      // --- ageing: fade in, live, then fade out and die -----------------
+      this.age += dt / 60;
+      const remaining = this.maxLife - this.age;
+      if (remaining <= 0) {
+        this.life = 0;
+        this.dead = true;
+      } else if (remaining < CONFIG.fadeOut) {
+        this.life = remaining / CONFIG.fadeOut;          // fade out
+      } else if (this.age < CONFIG.fadeIn) {
+        this.life = this.age / CONFIG.fadeIn;            // fade in
+      } else {
+        this.life = 1;
+      }
+    }
+    draw() {
+      const twinkle = 0.75 + 0.25 * Math.sin(time * this.pulse + this.phase);
+      const e = Math.max(this.energy, this.flash);
+      // 1 -> 0 over the contact window, with a smooth ease-out
+      const c = this.contact > 0 ? this.contact / CONFIG.contactFlash : 0;
+      const cEase = c * c;
+      // The tier gives the silhouette a three-level hierarchy: a bright, large
+      // outline; a mid-weight detail band; and a dim, small interior. That
+      // contrast is what makes the shape read as a solid object with an edge
+      // rather than a flat cloud of dots.
+      const eb = this.edgeBoost;
+      const alpha = clamp(this.life * (0.35 + 0.65 * twinkle) * (0.55 + e * 0.45) * (1 + eb * 0.55), 0, 1);
+      const radius = this.r * (1 + e * 0.9) * (1 + eb * 0.5);
+      const light = 58 + e * 34 + eb * 26;
+
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, radius, 0, Math.PI * 2);
+      // a touch warms the body toward yellow, then it cools back to its own hue
+      const bodyHue = cEase > 0.01 ? this.hue + (CONFIG.contactHue - this.hue) * cEase : this.hue;
+      const bodyLight = light + cEase * 22;
+      const sat = 95 - eb * 45;
+      ctx.fillStyle = `hsla(${bodyHue}, ${sat}%, ${bodyLight}%, ${alpha})`;
+      ctx.fill();
+
+      // A soft halo on the brightest particles gives the formation a glow
+      // without a second full-canvas pass. Only drawn when it will be visible.
+      if (eb > 0.4 || e > 0.5) {
+        const glow = Math.max(eb, e);
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, radius * 2.6, 0, Math.PI * 2);
+        ctx.fillStyle = `hsla(${bodyHue}, 90%, ${bodyLight}%, ${alpha * glow * 0.16})`;
+        ctx.fill();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- grid
+  // Spatial hash grid keeps neighbour queries near O(n) instead of O(n^2).
+  // cellSize is sized so a +/-2 cell scan covers cohesionRadius (150px):
+  // 2 * 75 = 150, so the 5x5 neighbourhood in updateFormations is exact.
+  const cellSize = 75;
+  let grid = new Map();
+  const key = (cx, cy) => cx * 100003 + cy;
+
+  // New particles are born at the boundary and drift inward, rather than
+  // popping into existence randomly in the middle of the field.
+  function spawnFromEdge() {
+    const edge = Math.floor(rand(0, 4));
+    const margin = 6;
+    let x, y, vx, vy;
+    if (edge === 0) {
+      x = rand(0, W); y = -margin; vx = rand(-0.35, 0.35); vy = rand(0.45, 1.1);
+    } else if (edge === 1) {
+      x = W + margin; y = rand(0, H); vx = rand(-1.1, -0.45); vy = rand(-0.35, 0.35);
+    } else if (edge === 2) {
+      x = rand(0, W); y = H + margin; vx = rand(-0.35, 0.35); vy = rand(-1.1, -0.45);
+    } else {
+      x = -margin; y = rand(0, H); vx = rand(0.45, 1.1); vy = rand(-0.35, 0.35);
+    }
+    const p = new Particle(x, y, { speed: 0, r: rand(0.7, 2.1) });
+    p.vx = vx;
+    p.vy = vy;
+    p.age = rand(0, CONFIG.fadeIn * 0.75);
+    p.life = Math.min(1, p.age / CONFIG.fadeIn);
+    return p;
+  }
+
+  // Communication network. Links are persistent objects: they appear when two
+  // particles come into range, brighten as the local cluster grows, and fade
+  // away when the pair drifts apart.
+  const links = new Map();
+  const pairKey = (a, b) => (a.id < b.id ? a.id * 1000003 + b.id : b.id * 1000003 + a.id);
+
+  function buildGrid() {
+    grid.clear();
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      const cx = Math.floor(p.x / cellSize);
+      const cy = Math.floor(p.y / cellSize);
+      const k = key(cx, cy);
+      let bucket = grid.get(k);
+      if (!bucket) { bucket = []; grid.set(k, bucket); }
+      bucket.push(p);
+    }
+  }
+
+  // Formation centroids: each particle is nudged toward the average position
+  // of its neighbours, so clusters travel together and reshape as they go.
+  function updateFormations() {
+    for (let i = 0; i < particles.length; i++) {
+      const a = particles[i];
+      const cx = Math.floor(a.x / cellSize);
+      const cy = Math.floor(a.y / cellSize);
+      let sx = 0, sy = 0, n = 0;
+
+      for (let ox = -2; ox <= 2; ox++) {
+        for (let oy = -2; oy <= 2; oy++) {
+          const bucket = grid.get(key(cx + ox, cy + oy));
+          if (!bucket) continue;
+          for (let j = 0; j < bucket.length; j++) {
+            const b = bucket[j];
+            if (b === a) continue;
+            const dx = a.x - b.x;
+            const dy = a.y - b.y;
+            if (dx * dx + dy * dy > CONFIG.cohesionRadiusSq) continue;
+            sx += b.x; sy += b.y; n++;
+          }
+        }
+      }
+
+      if (n > 0) { a.cx = sx / n; a.cy = sy / n; a.neighbors = n; }
+      else { a.cx = undefined; a.cy = undefined; a.neighbors = 0; }
+    }
+  }
+
+  // Communication network: discover links between nearby particles, then age
+  // them. A link's brightness scales with how many particles are in the local
+  // cluster, so the network visibly strengthens as more join.
+  function updateNetwork(dt) {
+    // 1. discover new connections
+    for (let i = 0; i < particles.length; i++) {
+      const a = particles[i];
+      const cx = Math.floor(a.x / cellSize);
+      const cy = Math.floor(a.y / cellSize);
+
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oy = -1; oy <= 1; oy++) {
+          const bucket = grid.get(key(cx + ox, cy + oy));
+          if (!bucket) continue;
+          for (let j = 0; j < bucket.length; j++) {
+            const b = bucket[j];
+            if (b === a) continue;
+            if (b.id < a.id) continue;   // handle each pair once
+
+            const dx = a.x - b.x;
+            const dy = a.y - b.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 > CONFIG.netDistSq) continue;
+
+            const k = pairKey(a, b);
+            let link = links.get(k);
+            if (!link) {
+              link = { a, b, fade: 0, ax: a.x, ay: a.y, bx: b.x, by: b.y };
+              links.set(k, link);
+            }
+            link.fade = Math.min(1, link.fade + CONFIG.netFadeIn * dt);
+          }
+        }
+      }
+    }
+
+    // 2. age every link: fade out and drop the ones that stretched apart
+    for (const [k, link] of links) {
+      const a = link.a, b = link.b;
+
+      // if either endpoint is gone, the line is orphaned: freeze it at
+      // its last position and let it fade away to nothing
+      if (a.dead || b.dead) {
+        link.fade -= CONFIG.netFadeOut * dt;
+        if (link.fade <= 0) links.delete(k);
+        continue;
+      }
+
+      // remember the live position so an orphaned line has somewhere to sit
+      link.ax = a.x; link.ay = a.y;
+      link.bx = b.x; link.by = b.y;
+
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      const d2 = dx * dx + dy * dy;
+
+      if (d2 > CONFIG.netBreakDistSq) {
+        link.fade -= CONFIG.netFadeOut * dt;
+        if (link.fade <= 0) links.delete(k);
+      } else if (d2 > CONFIG.netDistSq) {
+        // hysteresis band: hold the link but let it dim
+        link.fade = Math.max(0, link.fade - CONFIG.netFadeOut * 0.4 * dt);
+      }
+    }
+  }
+
+  // Links are drawn in hue buckets so strokeStyle is set a handful of times
+  // per frame instead of once per link. Building an hsla() string for every
+  // link was the main source of per-frame garbage.
+  const HUE_BUCKETS = 12;
+  const hueBucketPaths = new Array(HUE_BUCKETS);
+  const hueBucketAlpha = new Float32Array(HUE_BUCKETS);
+
+  function drawNetwork() {
+    ctx.lineWidth = 0.6;
+
+    // 1. bucket every visible link by hue, tracking the strongest alpha in
+    //    each bucket so the whole bucket can share one stroke style.
+    for (let i = 0; i < HUE_BUCKETS; i++) {
+      hueBucketPaths[i] = null;
+      hueBucketAlpha[i] = 0;
+    }
+
+    for (const link of links.values()) {
+      const a = link.a, b = link.b;
+      const orphaned = a.dead || b.dead;
+
+      // orphaned lines use their frozen endpoints; live ones use the particles
+      const ax = orphaned ? link.ax : a.x;
+      const ay = orphaned ? link.ay : a.y;
+      const bx = orphaned ? link.bx : b.x;
+      const by = orphaned ? link.by : b.y;
+
+      const dx = ax - bx;
+      const dy = ay - by;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > CONFIG.netBreakDistSq) continue;
+
+      const t = 1 - d2 / CONFIG.netBreakDistSq;
+      // cluster size drives the strength: more neighbours -> brighter network
+      const cluster = Math.min(1, ((a.neighbors || 0) + (b.neighbors || 0)) / (CONFIG.netCluster * 2));
+      const relativeSpeed = Math.hypot(a.vx - b.vx, a.vy - b.vy);
+      const coherence = 1 - Math.min(1, relativeSpeed / 6);
+      const strength = (CONFIG.netStrength + CONFIG.netBoost * cluster) * (0.38 + coherence * 0.62);
+      const formationFade = shape ? 0.28 : 1;
+      const alpha = t * t * strength * link.fade * formationFade;
+      if (alpha <= 0.004) continue;
+
+      const hue = (a.hue + b.hue) * 0.5;
+      const bucket = clamp(Math.floor((hue / 360) * HUE_BUCKETS), 0, HUE_BUCKETS - 1);
+      if (alpha > hueBucketAlpha[bucket]) hueBucketAlpha[bucket] = alpha;
+      if (!hueBucketPaths[bucket]) hueBucketPaths[bucket] = [];
+      hueBucketPaths[bucket].push(ax, ay, bx, by);
+    }
+
+    // 2. one stroke per non-empty bucket
+    for (let i = 0; i < HUE_BUCKETS; i++) {
+      const pts = hueBucketPaths[i];
+      if (!pts) continue;
+      const hue = ((i + 0.5) / HUE_BUCKETS) * 360;
+      ctx.strokeStyle = `hsla(${hue}, 90%, 68%, ${hueBucketAlpha[i]})`;
+      ctx.beginPath();
+      for (let j = 0; j < pts.length; j += 4) {
+        ctx.moveTo(pts[j], pts[j + 1]);
+        ctx.lineTo(pts[j + 2], pts[j + 3]);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // Collisions: particles bounce off each other. Neither one is consumed -
+  // they rebound, flash yellow, and a brand new particle is seeded at the
+  // point of contact.
+  function resolveCollisions() {
+    // Collision separation looks good in the free field, but it fights the
+    // target positions when a silhouette is forming. Let the shape solver win.
+    if (shape) return;
+
+    for (let i = 0; i < particles.length; i++) {
+      const a = particles[i];
+      const cx = Math.floor(a.x / cellSize);
+      const cy = Math.floor(a.y / cellSize);
+
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oy = -1; oy <= 1; oy++) {
+          const bucket = grid.get(key(cx + ox, cy + oy));
+          if (!bucket) continue;
+          for (let j = 0; j < bucket.length; j++) {
+            const b = bucket[j];
+            if (b === a) continue;
+            if (b.id < a.id) continue;   // handle each pair once
+
+            let dx = a.x - b.x;
+            let dy = a.y - b.y;
+            let d2 = dx * dx + dy * dy;
+            if (d2 > CONFIG.mergeDistSq) continue;
+
+            let d = Math.sqrt(d2);
+            if (d < 0.0001) {
+              // perfectly overlapping: nudge them apart on a random axis
+              const ang = rand(0, Math.PI * 2);
+              dx = Math.cos(ang); dy = Math.sin(ang); d = 1;
+            }
+
+            const nx = dx / d;
+            const ny = dy / d;
+
+            // 1. separate them so they stop overlapping
+            const overlap = CONFIG.mergeDist - d;
+            const push = overlap * 0.5;
+            a.x += nx * push; a.y += ny * push;
+            b.x -= nx * push; b.y -= ny * push;
+
+            // 2. elastic rebound along the collision normal
+            const rvx = a.vx - b.vx;
+            const rvy = a.vy - b.vy;
+            const vn = rvx * nx + rvy * ny;
+            if (vn < 0) {
+              const invA = 1 / a.mass;
+              const invB = 1 / b.mass;
+              const imp = -(1 + CONFIG.bounce) * vn / (invA + invB);
+              a.vx += imp * invA * nx;
+              a.vy += imp * invA * ny;
+              b.vx -= imp * invB * nx;
+              b.vy -= imp * invB * ny;
+
+              // A small tangential exchange makes contacts feel like fluid
+              // particles brushing past one another rather than hard balls.
+              const tx = -ny, ty = nx;
+              const vt = (a.vx - b.vx) * tx + (a.vy - b.vy) * ty;
+              const slip = vt * 0.045;
+              a.vx -= slip * tx; a.vy -= slip * ty;
+              b.vx += slip * tx; b.vy += slip * ty;
+            }
+
+            // 3. both light up on contact
+            a.contact = CONFIG.contactFlash;
+            b.contact = CONFIG.contactFlash;
+            a.flash = 1;
+            b.flash = 1;
+            a.absorbed++;
+            b.absorbed++;
+          }
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- spawn
+  function spawnBurst(x, y, n = CONFIG.burstCount) {
+    const room = CONFIG.maxCount - particles.length;
+    n = Math.min(n, Math.max(0, room));
+    for (let i = 0; i < n; i++) {
+      const a = rand(0, Math.PI * 2);
+      const s = rand(1.5, CONFIG.burstPower);
+      const p = new Particle(x, y, {
+        speed: 0,
+        r: rand(0.6, 2.0),
+      });
+      p.vx = Math.cos(a) * s;
+      p.vy = Math.sin(a) * s;
+      p.energy = 1;
+      particles.push(p);
+    }
+  }
+
+  function maintainPopulation(dt) {
+    // Particles die of old age, so the field is topped back up slowly rather
+    // than instantly. This keeps the population hovering around baseCount
+    // instead of snapping back the moment one dies. While a word is forming
+    // the field is left alone so the shape is not diluted.
+    if (shape) return;
+    const deficit = CONFIG.baseCount - particles.length;
+    if (deficit <= 0) return;
+    spawnAccum += CONFIG.respawnRate * (dt / 60);
+    while (spawnAccum >= 1 && particles.length < CONFIG.baseCount) {
+      particles.push(spawnFromEdge());
+      spawnAccum -= 1;
+    }
+  }
+
+  // ---------------------------------------------------------------- swarms
+  // A swarm is a fast-moving core that a group of particles chases. The core
+  // wanders the field, steering away from the edges, and the particles orbit
+  // it. Swarms are mortal too: after swarmLife seconds the core dissolves and
+  // its members are released back into the free field.
+  class Swarm {
+    constructor(x, y) {
+      this.x = x ?? rand(W * 0.15, W * 0.85);
+      this.y = y ?? rand(H * 0.15, H * 0.85);
+      const a = rand(0, Math.PI * 2);
+      this.vx = Math.cos(a) * CONFIG.swarmSpeed;
+      this.vy = Math.sin(a) * CONFIG.swarmSpeed;
+      this.heading = a;
+      this.age = 0;
+      this.maxLife = CONFIG.swarmLife * rand(0.7, 1.3);
+      this.hue = CONFIG.hueBase + rand(-CONFIG.hueSpread / 2, CONFIG.hueSpread / 2);
+      this.members = [];
+      this.dead = false;
+    }
+
+    step(dt) {
+      // steer: drift the heading, and nudge it away from the walls
+      this.heading += rand(-1, 1) * CONFIG.swarmTurn * dt;
+      const margin = 140;
+      if (this.x < margin) this.heading += 0.06 * dt;
+      if (this.x > W - margin) this.heading -= 0.06 * dt;
+      if (this.y < margin) this.heading += 0.06 * dt;
+      if (this.y > H - margin) this.heading -= 0.06 * dt;
+
+      const target = CONFIG.swarmSpeed;
+      this.vx += Math.cos(this.heading) * 0.12 * dt;
+      this.vy += Math.sin(this.heading) * 0.12 * dt;
+
+      // keep the core at a steady, brisk pace
+      const sp = Math.hypot(this.vx, this.vy) || 0.0001;
+      const k = target / sp;
+      this.vx *= k;
+      this.vy *= k;
+
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+
+      // bounce off the frame so a swarm never leaves the view
+      const pad = 60;
+      if (this.x < pad) { this.x = pad; this.vx = Math.abs(this.vx); this.heading = 0; }
+      else if (this.x > W - pad) { this.x = W - pad; this.vx = -Math.abs(this.vx); this.heading = Math.PI; }
+      if (this.y < pad) { this.y = pad; this.vy = Math.abs(this.vy); this.heading = Math.PI / 2; }
+      else if (this.y > H - pad) { this.y = H - pad; this.vy = -Math.abs(this.vy); this.heading = -Math.PI / 2; }
+
+      this.age += dt / 60;
+      if (this.age >= this.maxLife) this.dead = true;
+    }
+  }
+
+  function spawnSwarm() {
+    // Refuse to spawn when the field is full, otherwise the top-up loop in
+    // updateSwarms would spin forever waiting for a swarm that never appears.
+    if (particles.length >= CONFIG.maxCount) return false;
+
+    const s = new Swarm();
+    swarms.push(s);
+    for (let i = 0; i < CONFIG.swarmSize; i++) {
+      if (particles.length >= CONFIG.maxCount) break;
+      const a = rand(0, Math.PI * 2);
+      const r = rand(0, CONFIG.swarmRadius);
+      const p = new Particle(s.x + Math.cos(a) * r, s.y + Math.sin(a) * r, {
+        speed: rand(1.5, 3.5),
+        r: rand(0.7, 2.0),
+        life: rand(CONFIG.swarmLife, CONFIG.swarmLife * 1.6),
+      });
+      p.swarm = s;
+      p.hue = s.hue + rand(-18, 18);
+      s.members.push(p);
+      particles.push(p);
+    }
+    return true;
+  }
+
+  function updateSwarms(dt) {
+    for (let i = swarms.length - 1; i >= 0; i--) {
+      const s = swarms[i];
+      s.step(dt);
+      if (s.dead) {
+        // release the members so they rejoin the free field
+        for (const p of s.members) p.swarm = null;
+        swarms.splice(i, 1);
+      }
+    }
+    // keep the swarm population topped up, but never spin if the field is full
+    let guard = CONFIG.swarmCount + 1;
+    while (swarms.length < CONFIG.swarmCount && guard-- > 0) {
+      if (!spawnSwarm()) break;
+    }
+  }
+
+  // ---------------------------------------------------------------- shapes
+  // Each word maps to a vector silhouette. The silhouette is rasterised to an
+  // offscreen canvas, its opaque pixels are sampled into target points, and
+  // particles fly to those points - so the field draws a picture of the word
+  // rather than spelling it out.
+  const shapeCanvas = document.createElement('canvas');
+  const shapeCtx = shapeCanvas.getContext('2d', { willReadFrequently: true });
+
+  // Silhouettes are authored in a 100 x 100 box, then scaled to fit the view.
+  // Each entry is a list of paths; a path is a list of [x, y] points. Paths
+  // are filled, so closed outlines read as solid bodies.
+  const SHAPES = {
+    rabbit: [
+      // ears
+      [[38, 30], [34, 6], [42, 4], [46, 28]],
+      [[56, 28], [62, 4], [70, 7], [64, 32]],
+      // head
+      [[36, 30], [64, 30], [68, 44], [62, 56], [38, 56], [32, 44]],
+      // body
+      [[30, 56], [70, 56], [78, 74], [74, 90], [26, 90], [22, 74]],
+      // tail
+      [[22, 74], [12, 70], [10, 80], [20, 86]],
+    ],
+    cat: [
+      // ears
+      [[30, 34], [26, 12], [42, 26]],
+      [[70, 34], [74, 12], [58, 26]],
+      // head
+      [[28, 30], [72, 30], [76, 48], [64, 60], [36, 60], [24, 48]],
+      // body
+      [[32, 60], [68, 60], [76, 78], [72, 92], [28, 92], [24, 78]],
+      // tail
+      [[72, 78], [88, 70], [92, 80], [78, 88]],
+    ],
+    dog: [
+      // floppy ears
+      [[28, 30], [18, 40], [20, 58], [32, 52]],
+      [[72, 30], [82, 40], [80, 58], [68, 52]],
+      // head
+      [[30, 28], [70, 28], [74, 46], [62, 58], [38, 58], [26, 46]],
+      // snout
+      [[42, 52], [58, 52], [58, 64], [42, 64]],
+      // body
+      [[30, 58], [70, 58], [78, 76], [74, 92], [26, 92], [22, 76]],
+    ],
+    fox: [
+      // pointed ears
+      [[30, 32], [24, 8], [44, 26]],
+      [[70, 32], [76, 8], [56, 26]],
+      // head
+      [[28, 28], [72, 28], [76, 46], [64, 58], [36, 58], [24, 46]],
+      // snout
+      [[44, 50], [56, 50], [56, 62], [44, 62]],
+      // body
+      [[32, 58], [68, 58], [76, 76], [72, 92], [28, 92], [24, 76]],
+      // bushy tail
+      [[70, 76], [90, 66], [96, 78], [86, 90], [74, 88]],
+    ],
+    bird: [
+      // head
+      [[52, 20], [68, 26], [70, 40], [56, 46], [44, 40], [42, 28]],
+      // beak
+      [[68, 30], [84, 34], [68, 40]],
+      // body
+      [[40, 44], [66, 46], [72, 66], [60, 82], [38, 80], [32, 62]],
+      // wing
+      [[36, 50], [18, 44], [14, 60], [34, 68]],
+      // tail
+      [[38, 78], [16, 88], [22, 96], [42, 88]],
+      // legs
+      [[46, 82], [50, 82], [50, 96], [46, 96]],
+      [[58, 82], [62, 82], [62, 96], [58, 96]],
+    ],
+    fish: [
+      // body
+      [[24, 50], [40, 32], [62, 30], [78, 42], [80, 58], [62, 70], [40, 68]],
+      // tail
+      [[24, 50], [6, 34], [10, 50], [6, 66]],
+      // top fin
+      [[44, 32], [52, 16], [62, 30]],
+      // bottom fin
+      [[46, 68], [54, 84], [62, 70]],
+      // eye
+      [[64, 44], [70, 44], [70, 50], [64, 50]],
+    ],
+    star: [
+      [[50, 6], [61, 38], [95, 38], [68, 58], [78, 92], [50, 71], [22, 92], [32, 58], [5, 38], [39, 38]],
+    ],
+    moon: [
+      // crescent: outer disc minus an offset disc, drawn as one path
+      [[62, 8], [78, 22], [86, 44], [82, 68], [66, 86], [44, 94], [24, 88], [10, 72], [6, 50], [14, 28], [32, 12], [48, 6],
+       [40, 20], [30, 34], [26, 52], [32, 70], [46, 82], [62, 80], [74, 66], [78, 48], [72, 30], [60, 18]],
+    ],
+    heart: [
+      [[50, 88], [16, 58], [8, 38], [16, 20], [34, 16], [50, 30], [66, 16], [84, 20], [92, 38], [84, 58]],
+    ],
+    tree: [
+      // canopy
+      [[50, 6], [72, 30], [64, 30], [82, 52], [70, 52], [88, 74], [12, 74], [30, 52], [18, 52], [36, 30], [28, 30]],
+      // trunk
+      [[44, 74], [56, 74], [58, 96], [42, 96]],
+    ],
+    house: [
+      // roof
+      [[50, 8], [94, 46], [6, 46]],
+      // walls
+      [[16, 46], [84, 46], [84, 92], [16, 92]],
+      // door
+      [[42, 66], [58, 66], [58, 92], [42, 92]],
+    ],
+    car: [
+      // body
+      [[8, 62], [16, 44], [34, 40], [44, 26], [70, 26], [82, 42], [94, 48], [94, 66], [8, 66]],
+      // wheels
+      [[22, 66], [38, 66], [38, 82], [22, 82]],
+      [[62, 66], [78, 66], [78, 82], [62, 82]],
+    ],
+    rocket: [
+      // nose
+      [[50, 4], [64, 34], [36, 34]],
+      // body
+      [[36, 34], [64, 34], [66, 74], [34, 74]],
+      // fins
+      [[34, 56], [14, 84], [34, 78]],
+      [[66, 56], [86, 84], [66, 78]],
+      // flame
+      [[42, 74], [58, 74], [50, 96]],
+    ],
+    ghost: [
+      // head + body
+      [[24, 40], [34, 20], [50, 14], [66, 20], [76, 40], [78, 84],
+       [70, 74], [62, 84], [54, 74], [46, 84], [38, 74], [30, 84], [22, 74]],
+      // eyes
+      [[38, 40], [46, 40], [46, 50], [38, 50]],
+      [[54, 40], [62, 40], [62, 50], [54, 50]],
+    ],
+    skull: [
+      // cranium
+      [[28, 30], [38, 14], [62, 14], [72, 30], [74, 52], [64, 62], [36, 62], [26, 52]],
+      // jaw
+      [[38, 62], [62, 62], [60, 82], [40, 82]],
+      // eyes
+      [[36, 34], [46, 34], [46, 46], [36, 46]],
+      [[54, 34], [64, 34], [64, 46], [54, 46]],
+    ],
+    butterfly: [
+      // left wings
+      [[48, 50], [30, 20], [10, 26], [16, 48], [8, 62], [26, 74], [44, 62]],
+      // right wings
+      [[52, 50], [70, 20], [90, 26], [84, 48], [92, 62], [74, 74], [56, 62]],
+      // body
+      [[46, 34], [54, 34], [56, 74], [44, 74]],
+    ],
+    flower: [
+      // petals
+      [[50, 8], [62, 22], [58, 38], [42, 38], [38, 22]],
+      [[78, 26], [86, 42], [74, 52], [62, 44], [66, 28]],
+      [[22, 26], [14, 42], [26, 52], [38, 44], [34, 28]],
+      [[50, 44], [66, 56], [58, 72], [42, 72], [34, 56]],
+      // stem
+      [[47, 72], [53, 72], [53, 96], [47, 96]],
+    ],
+    lightning: [
+      [[58, 4], [30, 52], [46, 52], [38, 96], [72, 44], [54, 44], [66, 4]],
+    ],
+    crown: [
+      [[10, 74], [10, 30], [28, 48], [50, 20], [72, 48], [90, 30], [90, 74]],
+    ],
+    mountain: [
+      [[4, 88], [34, 34], [50, 58], [64, 30], [96, 88]],
+    ],
+    cloud: [
+      [[24, 66], [16, 54], [22, 40], [38, 36], [48, 24], [66, 26], [76, 38], [88, 44], [88, 60], [76, 70], [30, 72]],
+    ],
+    arrow: [
+      [[8, 44], [58, 44], [58, 26], [94, 50], [58, 74], [58, 56], [8, 56]],
+    ],
+    key: [
+      // bow
+      [[26, 34], [42, 34], [42, 50], [26, 50]],
+      // shaft
+      [[40, 38], [92, 38], [92, 46], [40, 46]],
+      // teeth
+      [[74, 46], [80, 46], [80, 58], [74, 58]],
+      [[86, 46], [92, 46], [92, 58], [86, 58]],
+    ],
+    anchor: [
+      // ring
+      [[44, 10], [56, 10], [56, 22], [44, 22]],
+      // shaft
+      [[47, 22], [53, 22], [53, 78], [47, 78]],
+      // crossbar
+      [[28, 34], [72, 34], [72, 42], [28, 42]],
+      // arms
+      [[10, 62], [22, 54], [30, 66], [46, 80], [54, 80], [70, 66], [78, 54], [90, 62], [74, 88], [26, 88]],
+    ],
+    sword: [
+      // blade
+      [[46, 6], [54, 6], [54, 66], [50, 76], [46, 66]],
+      // guard
+      [[28, 66], [72, 66], [72, 74], [28, 74]],
+      // grip
+      [[46, 74], [54, 74], [54, 92], [46, 92]],
+      // pommel
+      [[42, 92], [58, 92], [58, 98], [42, 98]],
+    ],
+    sun: [
+      [[50, 8], [58, 30], [78, 22], [66, 40], [92, 50], [66, 58], [78, 78], [58, 68], [50, 94], [42, 68], [22, 78], [34, 58], [8, 50], [34, 40], [22, 22], [42, 30]],
+    ],
+    leaf: [
+      [[50, 6], [72, 18], [88, 40], [78, 66], [56, 86], [34, 94], [24, 72], [18, 46], [28, 24]],
+      [[48, 14], [46, 86]],
+    ],
+    mushroom: [
+      [[12, 48], [18, 28], [34, 14], [50, 10], [66, 14], [82, 28], [88, 48]],
+      [[38, 48], [62, 48], [60, 92], [40, 92]],
+    ],
+    turtle: [
+      [[18, 46], [26, 26], [48, 18], [70, 26], [82, 46], [74, 66], [52, 76], [28, 68]],
+      [[70, 42], [90, 34], [94, 44], [80, 52]],
+      [[24, 64], [12, 76], [22, 82], [34, 72]],
+      [[68, 64], [80, 76], [70, 82], [58, 72]],
+    ],
+    dolphin: [
+      [[10, 52], [30, 34], [58, 30], [78, 40], [94, 30], [82, 50], [96, 62], [72, 58], [54, 72], [30, 68]],
+      [[54, 36], [46, 18], [62, 32]],
+    ],
+    whale: [
+      [[10, 54], [28, 34], [58, 28], [78, 38], [92, 30], [82, 52], [94, 66], [68, 60], [50, 74], [26, 70]],
+      [[42, 34], [34, 18], [52, 30]],
+    ],
+    owl: [
+      [[26, 28], [42, 14], [50, 24], [58, 14], [74, 28], [82, 50], [70, 78], [50, 90], [30, 78], [18, 50]],
+      [[32, 38], [46, 34], [46, 50], [32, 50]],
+      [[54, 34], [68, 38], [68, 50], [54, 50]],
+    ],
+    bee: [
+      [[22, 44], [34, 28], [66, 28], [78, 44], [66, 64], [34, 64]],
+      [[28, 28], [18, 12], [38, 24]],
+      [[62, 28], [82, 12], [72, 32]],
+    ],
+    elephant: [
+      [[24, 26], [46, 18], [68, 26], [76, 44], [68, 62], [58, 68], [62, 92], [52, 92], [50, 70], [38, 70], [34, 92], [24, 92], [28, 66], [16, 52], [12, 34]],
+      [[70, 40], [92, 48], [86, 58], [72, 54]],
+    ],
+    dinosaur: [
+      [[16, 70], [24, 48], [42, 42], [52, 22], [68, 18], [72, 34], [62, 42], [82, 48], [90, 64], [76, 66], [68, 58], [64, 82], [54, 82], [54, 60], [42, 68], [38, 88], [28, 88], [30, 68]],
+    ],
+    plane: [
+      [[6, 46], [42, 46], [50, 10], [58, 46], [94, 46], [94, 56], [58, 56], [50, 92], [42, 56], [6, 56]],
+    ],
+    spaceship: [
+      [[50, 6], [66, 34], [82, 66], [68, 62], [62, 88], [50, 72], [38, 88], [32, 62], [18, 66], [34, 34]],
+    ],
+    boat: [
+      [[10, 62], [90, 62], [76, 84], [24, 84]],
+      [[46, 14], [54, 14], [54, 62], [46, 62]],
+      [[52, 20], [82, 50], [52, 50]],
+    ],
+    umbrella: [
+      [[10, 50], [18, 30], [34, 18], [50, 14], [66, 18], [82, 30], [90, 50]],
+      [[48, 50], [52, 50], [52, 82], [64, 90], [70, 86], [62, 80], [54, 82]],
+    ],
+    balloon: [
+      [[50, 8], [70, 16], [84, 34], [82, 56], [68, 72], [50, 78], [32, 72], [18, 56], [16, 34], [30, 16]],
+      [[48, 78], [52, 78], [52, 94], [48, 94]],
+    ],
+    music: [
+      [[28, 18], [34, 18], [34, 66], [28, 66]],
+      [[30, 18], [74, 8], [74, 14], [34, 24]],
+      [[68, 8], [74, 8], [74, 54], [68, 54]],
+      [[20, 62], [34, 58], [42, 66], [40, 80], [28, 86], [18, 80]],
+      [[60, 50], [74, 46], [84, 54], [82, 68], [70, 74], [60, 68]],
+    ],
+    lock: [
+      [[28, 42], [28, 28], [36, 16], [50, 10], [64, 16], [72, 28], [72, 42]],
+      [[20, 40], [80, 40], [80, 88], [20, 88]],
+      [[46, 56], [54, 56], [54, 74], [46, 74]],
+    ],
+    smile: [
+      [[18, 30], [30, 18], [70, 18], [82, 30], [90, 50], [82, 70], [70, 82], [30, 82], [18, 70], [10, 50]],
+      [[30, 40], [40, 40], [40, 50], [30, 50]],
+      [[60, 40], [70, 40], [70, 50], [60, 50]],
+      [[28, 58], [38, 68], [62, 68], [72, 58]],
+    ],
+    diamond: [
+      [[50, 6], [92, 50], [50, 94], [8, 50]],
+    ],
+    crown2: [],
+  };
+
+  // Per-shape colour identity. Each entry is [hue, hueSpread]; particles in a
+  // formation are re-tinted toward this range so a rocket reads warm and a
+  // fish reads cool, instead of every shape sharing the field's blue.
+  const PALETTES = {
+    rocket: [18, 40], spaceship: [18, 40], car: [200, 30], plane: [200, 30],
+    boat: [195, 35], fish: [185, 45], dolphin: [185, 45], whale: [185, 45],
+    bird: [200, 40], butterfly: [285, 70], bee: [45, 25], owl: [35, 30],
+    tree: [130, 45], leaf: [120, 50], flower: [320, 90], mushroom: [10, 40],
+    heart: [340, 25], star: [48, 20], sun: [42, 22], moon: [225, 25],
+    cloud: [205, 25], lightning: [52, 25], crown: [45, 25], diamond: [190, 30],
+    ghost: [210, 30], skull: [210, 20], smile: [45, 30], music: [275, 45],
+    turtle: [140, 40], balloon: [350, 80], elephant: [215, 25], dinosaur: [110, 45],
+    rabbit: [30, 30], cat: [35, 30], dog: [28, 30], fox: [22, 35],
+    house: [25, 35], key: [45, 25], anchor: [210, 25], sword: [200, 20],
+    lock: [45, 25], arrow: [200, 30], mountain: [215, 30], umbrella: [330, 60],
+  };
+
+  // Aliases so common words resolve to a silhouette.
+  const ALIASES = {
+    bunny: 'rabbit', hare: 'rabbit', kitty: 'cat', kitten: 'cat', puppy: 'dog',
+    wolf: 'dog', birdie: 'bird', fishy: 'fish', star2: 'star', crescent: 'moon',
+    love: 'heart', xmas: 'tree', pine: 'tree', home: 'house', auto: 'car',
+    spaceship: 'rocket', spirit: 'ghost', bones: 'skull', fly: 'butterfly',
+    bloom: 'flower', bolt: 'lightning', king: 'crown', peak: 'mountain',
+    sky: 'cloud', pointer: 'arrow', lock: 'key', ship: 'anchor', blade: 'sword',
+  };
+
+  function resolveShape(text) {
+    const t = text.trim().toLowerCase();
+    // an empty silhouette array is truthy, so check .length explicitly:
+    // otherwise "moon" resolves to a shape that draws nothing.
+    if (SHAPES[t] && SHAPES[t].length) return t;
+    const alias = ALIASES[t];
+    if (alias && SHAPES[alias] && SHAPES[alias].length) return alias;
+    return null;
+  }
+
+  // Rasterise a silhouette into a list of target points, scaled to the view.
+  function sampleShape(name) {
+    const paths = SHAPES[name];
+    if (!paths || !paths.length) return null;
+
+    // fit the 100x100 authoring box into the viewport with a margin
+    const size = Math.min(W, H) * 0.62;
+    const scale = size / 100;
+    const cw = Math.ceil(size);
+    const ch = Math.ceil(size);
+
+    shapeCanvas.width = cw;
+    shapeCanvas.height = ch;
+    shapeCtx.setTransform(1, 0, 0, 1, 0, 0);
+    shapeCtx.clearRect(0, 0, cw, ch);
+    shapeCtx.fillStyle = '#fff';
+    shapeCtx.beginPath();
+    for (const path of paths) {
+      if (path.length < 3) continue;
+      shapeCtx.moveTo(path[0][0] * scale, path[0][1] * scale);
+      for (let i = 1; i < path.length; i++) {
+        shapeCtx.lineTo(path[i][0] * scale, path[i][1] * scale);
+      }
+      shapeCtx.closePath();
+    }
+    shapeCtx.fill();
+
+    const data = shapeCtx.getImageData(0, 0, cw, ch).data;
+    const points = sampleSilhouette(data, cw, ch);
+    if (!points.length) return null;
+
+    // centre the drawing in the viewport
+    const ox = (W - cw) / 2;
+    const oy = (H - ch) / 2;
+    return { points, ox, oy, cw, ch };
+  }
+
+  // Turn a rasterised silhouette into target points. The key idea is that a
+  // shape reads as a real object when its OUTLINE is dense and its INTERIOR is
+  // sparse with even gaps - a uniform fill just looks like a blob. So we build
+  // a distance-to-edge field and sample in three tiers:
+  //   edge   - the contour itself, sampled densely (the lit outline)
+  //   detail - a thin band just inside the contour (gives the shape thickness)
+  //   fill   - the deep interior, sampled on a coarse, evenly-spaced grid
+  // Each point carries its tier so the renderer can size/brighten it.
+  function sampleSilhouette(data, cw, ch) {
+    const solid = (x, y) => {
+      if (x < 0 || y < 0 || x >= cw || y >= ch) return false;
+      return data[(y * cw + x) * 4 + 3] > 128;
+    };
+
+    // --- 1. distance-to-edge field (cheap two-pass chamfer) --------------
+    // dist[i] = approximate distance in px from a solid pixel to the nearest
+    // empty pixel. Empty pixels stay 0.
+    const INF = 1e9;
+    const dist = new Float32Array(cw * ch);
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        dist[y * cw + x] = solid(x, y) ? INF : 0;
+      }
+    }
+    // forward pass
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        const i = y * cw + x;
+        if (dist[i] === 0) continue;
+        let d = dist[i];
+        if (x > 0) d = Math.min(d, dist[i - 1] + 1);
+        if (y > 0) d = Math.min(d, dist[i - cw] + 1);
+        if (x > 0 && y > 0) d = Math.min(d, dist[i - cw - 1] + 1.414);
+        if (x < cw - 1 && y > 0) d = Math.min(d, dist[i - cw + 1] + 1.414);
+        dist[i] = d;
+      }
+    }
+    // backward pass
+    for (let y = ch - 1; y >= 0; y--) {
+      for (let x = cw - 1; x >= 0; x--) {
+        const i = y * cw + x;
+        if (dist[i] === 0) continue;
+        let d = dist[i];
+        if (x < cw - 1) d = Math.min(d, dist[i + 1] + 1);
+        if (y < ch - 1) d = Math.min(d, dist[i + cw] + 1);
+        if (x < cw - 1 && y < ch - 1) d = Math.min(d, dist[i + cw + 1] + 1.414);
+        if (x > 0 && y < ch - 1) d = Math.min(d, dist[i + cw - 1] + 1.414);
+        dist[i] = d;
+      }
+    }
+
+    // --- 2. classify every solid pixel into a tier ----------------------
+    // Thresholds scale with the shape so small silhouettes still get a band.
+    const maxDist = Math.max(2, Math.min(cw, ch) * 0.06);
+    const edgeBand = 1.6;                 // px: on the contour
+    const detailBand = maxDist * 0.55;    // px: just inside the contour
+
+    const points = [];
+    const step = 2;
+    for (let y = 0; y < ch; y += step) {
+      for (let x = 0; x < cw; x += step) {
+        if (!solid(x, y)) continue;
+        const d = dist[y * cw + x];
+        let tier;
+        if (d <= edgeBand) tier = 'edge';
+        else if (d <= detailBand) tier = 'detail';
+        else tier = 'fill';
+        points.push({ x, y, tier, d });
+      }
+    }
+    return points;
+  }
+
+  function formWord(text) {
+    const name = resolveShape(text);
+    if (!name) {
+      // no silhouette for this word: fall back to spelling it out
+      return formText(text);
+    }
+    const sampled = sampleShape(name);
+    if (!sampled) return;
+    assignTargets(sampled.points, sampled.ox, sampled.oy, name, sampled.cw, sampled.ch);
+  }
+
+  // Fallback for words with no silhouette: spell the word out in particles.
+  function formText(text) {
+    const fontSize = Math.min(W, H) * 0.34;
+    const font = `900 ${fontSize}px ui-monospace, Menlo, monospace`;
+
+    shapeCtx.setTransform(1, 0, 0, 1, 0, 0);
+    shapeCtx.font = font;
+    const metrics = shapeCtx.measureText(text);
+    const pad = fontSize * 0.25;
+    const cw = Math.ceil(metrics.width + pad * 2);
+    const ch = Math.ceil(fontSize * 1.5);
+
+    shapeCanvas.width = cw;
+    shapeCanvas.height = ch;
+    shapeCtx.font = font;
+    shapeCtx.textAlign = 'center';
+    shapeCtx.textBaseline = 'middle';
+    shapeCtx.clearRect(0, 0, cw, ch);
+    shapeCtx.fillStyle = '#fff';
+    shapeCtx.fillText(text, cw / 2, ch / 2);
+
+    const data = shapeCtx.getImageData(0, 0, cw, ch).data;
+    const points = sampleSilhouette(data, cw, ch);
+    if (!points.length) return;
+
+    for (let i = points.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [points[i], points[j]] = [points[j], points[i]];
+    }
+
+    const ox = (W - cw) / 2;
+    const oy = (H - ch) / 2;
+    assignTargets(points, ox, oy, text, cw, ch);
+  }
+
+  // Choose only as many particles as the silhouette can use cleanly. The
+  // budget is derived from the displayed shape area and then capped by the
+  // number of living particles already in the field. No formation-only births.
+  // Because the interior is now sampled sparsely, a larger budget mostly goes
+  // into a denser, more continuous outline rather than a denser blob.
+  function calculateShapeParticleCount(points, cw, ch) {
+    const areaRatio = clamp(points.length / Math.max(1, cw * ch / 4), 0.12, 1.0);
+    const shapeArea = cw * ch * areaRatio;
+    const density = Math.max(2.2, CONFIG.shapeParticleSpacing * CONFIG.shapeParticleSpacing);
+    const estimated = Math.sqrt(shapeArea / density) * 22;
+    return Math.round(clamp(estimated, CONFIG.shapeMinParticles, CONFIG.shapeMaxParticles));
+  }
+
+  // Allocate the particle budget across the three tiers. The outline is the
+  // most important cue for recognising a shape, so it is filled first and at
+  // full density; the detail band comes next; whatever is left goes to the
+  // interior, where we deliberately keep gaps so the shape does not blob up.
+  function sampleForParticleBudget(points, count) {
+    if (points.length <= count) return points.slice();
+
+    const edge = [], detail = [], fill = [];
+    for (const p of points) {
+      if (p.tier === 'edge') edge.push(p);
+      else if (p.tier === 'detail') detail.push(p);
+      else fill.push(p);
+    }
+
+    // Reserve the outline and detail bands first, but never let them starve
+    // the interior completely - a shape with no fill reads as a wireframe.
+    const edgeBudget = Math.min(edge.length, Math.round(count * 0.42));
+    const detailBudget = Math.min(detail.length, Math.round(count * 0.30));
+    const fillBudget = Math.max(0, count - edgeBudget - detailBudget);
+
+    const result = [];
+    result.push(...evenSample(edge, edgeBudget));
+    result.push(...evenSample(detail, detailBudget));
+    result.push(...evenSample(fill, fillBudget));
+    return result;
+  }
+
+  // Pick `count` points spread evenly through a list, preserving order so the
+  // silhouette stays uniformly covered instead of clumping.
+  function evenSample(list, count) {
+    if (count <= 0) return [];
+    if (list.length <= count) return list.slice();
+    const out = [];
+    const stride = list.length / count;
+    for (let i = 0; i < count; i++) {
+      const idx = Math.min(list.length - 1, Math.floor(i * stride + stride * 0.5));
+      out.push(list[idx]);
+    }
+    return out;
+  }
+
+  // Shared assignment: hand a carefully sized subset of living particles the
+  // target points. All other particles remain part of the environment.
+  function assignTargets(points, ox, oy, label, cw = W, ch = H) {
+    // release any swarm members so they can join the formation
+    for (const s of swarms) for (const p of s.members) p.swarm = null;
+    swarms.length = 0;
+
+    const living = particles.filter(p => !p.dead);
+    const desired = calculateShapeParticleCount(points, cw, ch);
+    const n = Math.min(desired, living.length, points.length);
+    const targetPoints = sampleForParticleBudget(points, n).sort((a, b) => {
+      const ya = Math.floor(a.y / 12), yb = Math.floor(b.y / 12);
+      if (ya !== yb) return ya - yb;
+      return a.x - b.x;
+    });
+
+    // Shuffle the available living particles only, so the target assignment
+    // stays physically spread across the field instead of following birth order.
+    const pool = living.slice();
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+
+    const shapeSize = Math.min(cw, ch);
+    const baseCx = (W - cw) / 2 + cw / 2;
+    const baseCy = (H - ch) / 2 + ch / 2;
+
+    // Re-tint the formation toward its own palette so each shape has identity.
+    const palette = PALETTES[label] || [CONFIG.hueBase, CONFIG.hueSpread];
+    const [palHue, palSpread] = palette;
+
+    for (let i = 0; i < n; i++) {
+      const pt = targetPoints[i];
+      const tx = ox + pt.x + rand(-CONFIG.shapeJitter, CONFIG.shapeJitter);
+      const ty = oy + pt.y + rand(-CONFIG.shapeJitter, CONFIG.shapeJitter);
+      const p = pool[i];
+      if (!p) break;
+
+      p.swarm = null;
+      p.tx = tx;
+      p.ty = ty;
+      p.arrived = false;
+      p.targetDelay = rand(0, CONFIG.shapeDelayMax);
+      p.targetSeed = rand(0, Math.PI * 2);
+      // Blend toward the palette rather than snapping, so the field's own
+      // colour still shows through and the transition is not jarring.
+      const targetHue = palHue + rand(-palSpread / 2, palSpread / 2);
+      p.hue += (targetHue - p.hue) * 0.85;
+      // The tier decides how prominent this particle is in the silhouette:
+      // the outline is the lit contour, the detail band gives it thickness,
+      // and the interior stays dim so the shape reads as a hollow form.
+      p.tier = pt.tier;
+      p.edge = pt.tier === 'edge';
+      p.edgeBoost = pt.tier === 'edge' ? rand(0.75, 1.0)
+                  : pt.tier === 'detail' ? rand(0.30, 0.55)
+                  : 0;
+
+      // Preserve existing momentum, but bend it toward the formation rather
+      // than launching every particle from an artificial starting velocity.
+      const dx = tx - p.x;
+      const dy = ty - p.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const tangential = rand(-1, 1) * 1.3;
+      p.vx += (dx / d) * rand(0.15, 0.7) - (dy / d) * tangential;
+      p.vy += (dy / d) * rand(0.15, 0.7) + (dx / d) * tangential;
+    }
+
+    // Everything not selected for the silhouette stays free.
+    const selected = new Set(pool.slice(0, n));
+    for (const p of particles) {
+      if (!selected.has(p)) {
+        p.tx = null;
+        p.ty = null;
+        p.arrived = false;
+      }
+    }
+
+    shape = {
+      text: label,
+      age: 0,
+      hold: CONFIG.shapeHold,
+      baseCx,
+      baseCy,
+      cx: baseCx,
+      cy: baseCy,
+      size: shapeSize,
+      particleCount: n,
+      seed: rand(0, Math.PI * 2),
+    };
+    shapeEl.textContent = label;
+  }
+
+  function clearShape() {
+    for (const p of particles) {
+      if (p.tx !== null) {
+        const dx = p.x - W / 2;
+        const dy = p.y - H / 2;
+        const d = Math.hypot(dx, dy) || 1;
+        const burst = rand(1.0, 3.0);
+        p.vx += (dx / d) * burst;
+        p.vy += (dy / d) * burst;
+      }
+      p.tx = null;
+      p.ty = null;
+      p.arrived = false;
+      p.targetDelay = 0;
+      p.tier = null;
+      p.edge = false;
+      p.edgeBoost = 0;
+    }
+    shape = null;
+    shapeEl.textContent = 'free';
+  }
+
+  function updateShape(dt) {
+    if (!shape) return;
+
+    shape.age += dt / 60;
+    const w = W, h = H;
+    let tx = shape.baseCx;
+    let ty = shape.baseCy;
+
+    // The centroid drift comes from the same registry entry that drives the
+    // per-particle deformation, so the two can no longer be tuned apart.
+    const behavior = SHAPE_BEHAVIORS[shape.text];
+    if (behavior && behavior.centroid) {
+      const c = behavior.centroid(time, shape.seed, w, h);
+      tx += c.dx || 0;
+      ty += c.dy || 0;
+    }
+
+    // Keep moving formations comfortably inside the viewport.
+    const marginX = Math.min(w * 0.16, shape.size * 0.38);
+    const marginY = Math.min(h * 0.18, shape.size * 0.38);
+    shape.cx = clamp(tx, marginX, w - marginX);
+    shape.cy = clamp(ty, marginY, h - marginY);
+
+    if (shape.age >= shape.hold) clearShape();
+  }
+
+  // ---------------------------------------------------------------- resize
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.fillStyle = '#05060a';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function drawShapeEffects() {
+    if (!shape) return;
+    const x = shape.cx, y = shape.cy;
+    const behavior = SHAPE_BEHAVIORS[shape.text];
+    const pulse = 0.5 + 0.5 * Math.sin(time * 1.4);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    // A soft coloured bloom behind the whole formation, tinted to its palette.
+    // This is what makes the silhouette feel lit from within rather than just
+    // being a scatter of dots.
+    const palette = PALETTES[shape.text] || [CONFIG.hueBase, CONFIG.hueSpread];
+    const bloomR = shape.size * 0.62;
+    const bloom = ctx.createRadialGradient(x, y, bloomR * 0.15, x, y, bloomR);
+    bloom.addColorStop(0, `hsla(${palette[0]}, 85%, 62%, ${0.05 + pulse * 0.02})`);
+    bloom.addColorStop(0.55, `hsla(${palette[0]}, 85%, 55%, 0.02)`);
+    bloom.addColorStop(1, `hsla(${palette[0]}, 85%, 50%, 0)`);
+    ctx.fillStyle = bloom;
+    ctx.beginPath(); ctx.arc(x, y, bloomR, 0, Math.PI * 2); ctx.fill();
+
+    if (behavior && behavior.effects) {
+      behavior.effects(ctx, x, y, time, pulse);
+    } else {
+      // A very subtle ambient halo keeps every selected object alive.
+      const g = ctx.createRadialGradient(x, y, 20, x, y, 150);
+      g.addColorStop(0, 'rgba(110,180,255,0.025)');
+      g.addColorStop(1, 'rgba(110,180,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y, 150, 0, Math.PI * 2); ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  // ---------------------------------------------------------------- loop
+  function frame(now) {
+    const rawDt = (now - last) / 1000;
+    last = now;
+    const dt = clamp(rawDt, 0.001, 0.05) * 60;   // normalized to ~60fps units
+    time += rawDt;
+
+    // motion-trail fade instead of a hard clear
+    ctx.fillStyle = `rgba(5, 6, 10, ${CONFIG.trailAlpha})`;
+    ctx.fillRect(0, 0, W, H);
+
+    // 1. move everything
+    for (let i = 0; i < particles.length; i++) particles[i].step(dt);
+    updateSwarms(dt);
+    updateShape(dt);
+
+    // 2. rebuild the spatial grid, then let formations and collisions react
+    buildGrid();
+    updateFormations();
+    const collided = !shape;   // collisions are skipped while a shape forms
+    resolveCollisions();
+
+    // 3. compact the array, dropping particles that have died of old age
+    let w = 0;
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.dead) continue;
+      particles[w++] = p;
+    }
+    particles.length = w;
+
+    // 3b. slowly top the field back up as particles expire
+    maintainPopulation(dt);
+
+    // 4. rebuild the grid only if collisions actually moved particles,
+    //    then refresh the network
+    if (collided) buildGrid();
+    updateNetwork(dt);
+
+    // 5. draw the network first, then the particles on top
+    drawNetwork();
+    drawShapeEffects();
+    for (let i = 0; i < particles.length; i++) particles[i].draw();
+
+    // fps meter
+    fpsAccum += rawDt;
+    fpsFrames++;
+    if (fpsAccum >= 0.5) {
+      fpsEl.textContent = Math.round(fpsFrames / fpsAccum);
+      countEl.textContent = particles.length;
+      fpsAccum = 0;
+      fpsFrames = 0;
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---------------------------------------------------------------- input
+  window.addEventListener('pointermove', (e) => {
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;
+    mouse.active = true;
+  });
+
+  window.addEventListener('pointerdown', (e) => {
+    mouse.down = true;
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;
+    mouse.active = true;
+    spawnBurst(e.clientX, e.clientY);
+  });
+
+  window.addEventListener('pointerup', () => { mouse.down = false; });
+
+  window.addEventListener('pointerleave', () => {
+    mouse.active = false;
+    mouse.down = false;
+  });
+
+  window.addEventListener('resize', resize);
+
+  // ---------------------------------------------------------------- word input
+  const PRESETS = Object.keys(SHAPES).filter(name => SHAPES[name] && SHAPES[name].length);
+
+  for (const word of PRESETS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = word;
+    b.addEventListener('click', () => {
+      for (const chip of chipsEl.querySelectorAll('button')) chip.classList.remove('active');
+      b.classList.add('active');
+      wordInput.value = word;
+      formWord(word);
+    });
+    chipsEl.appendChild(b);
+  }
+
+  function setActivePreset(name) {
+    for (const chip of chipsEl.querySelectorAll('button')) {
+      chip.classList.toggle('active', chip.textContent === name);
+    }
+  }
+
+  promptForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = wordInput.value.trim();
+    if (!text) { clearShape(); return; }
+    setActivePreset(resolveShape(text) || '');
+    formWord(text);
+  });
+
+  // typing a new word while a shape is held re-forms it live
+  wordInput.addEventListener('input', () => {
+    const text = wordInput.value.trim();
+    if (!text) { clearShape(); return; }
+    const resolved = resolveShape(text);
+    if (resolved) {
+      setActivePreset(resolved);
+      formWord(text);
+    }
+  });
+
+  // ---------------------------------------------------------------- tuning panel
+  // Press "T" to toggle. Exposes the handful of CONFIG values that are worth
+  // dialling in live; everything else stays in the source.
+  const TUNING = [
+    ['attract', 0, 0.3, 0.005],
+    ['swirl', 0, 3, 0.05],
+    ['friction', 0.9, 1, 0.001],
+    ['maxSpeed', 0.5, 8, 0.1],
+    ['wander', 0, 0.3, 0.005],
+    ['cohesion', 0, 0.1, 0.002],
+    ['netStrength', 0, 1, 0.02],
+    ['netBoost', 0, 1, 0.02],
+    ['trailAlpha', 0.02, 0.6, 0.01],
+    ['shapeHold', 2, 30, 0.5],
+    ['shapeOrbit', 0, 3, 0.05],
+    ['shapeNoise', 0, 1.5, 0.05],
+    ['shapeDeform', 0, 3, 0.05],
+    ['swarmCount', 0, 12, 1],
+    ['swarmSpeed', 0.5, 8, 0.1],
+  ];
+
+  let tuningEl = null;
+
+  function buildTuningPanel() {
+    tuningEl = document.createElement('div');
+    tuningEl.style.cssText = [
+      'position:fixed', 'right:16px', 'bottom:16px', 'z-index:20',
+      'width:230px', 'max-height:70vh', 'overflow-y:auto',
+      'padding:10px 12px', 'border-radius:12px',
+      'background:rgba(8,12,22,0.88)', 'border:1px solid rgba(90,130,190,0.35)',
+      'backdrop-filter:blur(8px)', 'color:#cfe2ff',
+      'font:10px ui-monospace,Menlo,monospace', 'letter-spacing:0.06em',
+      'display:none',
+    ].join(';');
+
+    const head = document.createElement('div');
+    head.textContent = 'TUNING  (T to hide)';
+    head.style.cssText = 'margin-bottom:8px;color:rgba(140,200,255,0.9);letter-spacing:0.18em';
+    tuningEl.appendChild(head);
+
+    for (const [key, min, max, step] of TUNING) {
+      const row = document.createElement('label');
+      row.style.cssText = 'display:block;margin-bottom:7px';
+
+      const label = document.createElement('span');
+      label.textContent = `${key}  ${CONFIG[key]}`;
+      label.style.cssText = 'display:block;margin-bottom:2px;color:rgba(180,210,255,0.7)';
+
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = min; input.max = max; input.step = step;
+      input.value = CONFIG[key];
+      input.style.cssText = 'width:100%;accent-color:#5a96f0';
+      input.addEventListener('input', () => {
+        CONFIG[key] = parseFloat(input.value);
+        label.textContent = `${key}  ${CONFIG[key]}`;
+        // keep the derived squared values in sync
+        if (key === 'mouseRadius') CONFIG.mouseRadiusSq = CONFIG.mouseRadius ** 2;
+        if (key === 'cohesionRadius') CONFIG.cohesionRadiusSq = CONFIG.cohesionRadius ** 2;
+      });
+
+      row.appendChild(label);
+      row.appendChild(input);
+      tuningEl.appendChild(row);
+    }
+
+    document.body.appendChild(tuningEl);
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 't' || e.key === 'T') {
+      if (!tuningEl) buildTuningPanel();
+      tuningEl.style.display = tuningEl.style.display === 'none' ? 'block' : 'none';
+    }
+  });
+
+  // ---------------------------------------------------------------- boot
+  resize();
+  // Seed a healthy field once. Later shapes reorganise these particles rather
+  // than creating special shape-only particles.
+  for (let i = 0; i < Math.min(CONFIG.baseCount, CONFIG.maxCount); i++) particles.push(new Particle());
+  for (let i = 0; i < CONFIG.swarmCount; i++) spawnSwarm();
+  requestAnimationFrame((t) => { last = t; frame(t); });
+})();
+</script>
+</body>
+</html>

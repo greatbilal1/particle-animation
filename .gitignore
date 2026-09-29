@@ -1,0 +1,4 @@
+# Only preview.html is tracked in this repo.
+*
+!.gitignore
+!preview.html
