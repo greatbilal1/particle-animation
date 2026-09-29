@@ -243,7 +243,15 @@
     shapeMotion: 0.92,       // overall shape movement response
     shapeDeform: 1.0,        // strength of local shape deformation
     shapeDissolve: 2.6,      // seconds the shape takes to melt back into the flow
+
+    // --- feature marks (eyes, whiskers, stripes) --------------------
+    featureBoost: 1.0,       // 0..2 multiplier on how bright/large features render
+    featureMinParticles: 3,  // particles reserved per feature mark so eyes stay solid
   };
+
+  // Snapshot of the pristine defaults, taken before anything can mutate CONFIG.
+  // The tuning panel's Reset button restores from this.
+  const CONFIG_DEFAULTS = Object.freeze({ ...CONFIG });
 
   // ---------------------------------------------------------------- state
   const particles = [];
@@ -669,6 +677,7 @@
       this.tier = null;                  // 'edge' | 'detail' | 'fill' while in a shape
       this.edge = false;                 // sits on the silhouette outline
       this.edgeBoost = 0;                // 0..1 extra brightness for outline particles
+      this.featureBoost = 0;             // 0..1 extra brightness for eyes / marks
     }
 
     getAnimatedTarget() {
@@ -946,23 +955,27 @@
       // contrast is what makes the shape read as a solid object with an edge
       // rather than a flat cloud of dots.
       const eb = this.edgeBoost;
-      const alpha = clamp(this.life * (0.35 + 0.65 * twinkle) * (0.55 + e * 0.45) * (1 + eb * 0.55), 0, 1);
-      const radius = this.r * (1 + e * 0.9) * (1 + eb * 0.5);
-      const light = 58 + e * 34 + eb * 26;
+      // Feature marks (eyes, whiskers) get their own boost so they read as
+      // crisp, bright points instead of dissolving into the detail band.
+      const fb = this.featureBoost * CONFIG.featureBoost;
+      const alpha = clamp(this.life * (0.35 + 0.65 * twinkle) * (0.55 + e * 0.45) * (1 + eb * 0.55) * (1 + fb * 0.85), 0, 1);
+      const radius = this.r * (1 + e * 0.9) * (1 + eb * 0.5) * (1 + fb * 0.75);
+      const light = 58 + e * 34 + eb * 26 + fb * 30;
 
       ctx.beginPath();
       ctx.arc(this.x, this.y, radius, 0, Math.PI * 2);
       // a touch warms the body toward yellow, then it cools back to its own hue
       const bodyHue = cEase > 0.01 ? this.hue + (CONFIG.contactHue - this.hue) * cEase : this.hue;
       const bodyLight = light + cEase * 22;
-      const sat = 95 - eb * 45;
+      // Features stay near-white so an eye is unmistakably an eye.
+      const sat = clamp(95 - eb * 45 - fb * 70, 0, 100);
       ctx.fillStyle = `hsla(${bodyHue}, ${sat}%, ${bodyLight}%, ${alpha})`;
       ctx.fill();
 
       // A soft halo on the brightest particles gives the formation a glow
       // without a second full-canvas pass. Only drawn when it will be visible.
-      if (eb > 0.4 || e > 0.5) {
-        const glow = Math.max(eb, e);
+      if (eb > 0.4 || e > 0.5 || fb > 0.3) {
+        const glow = Math.max(eb, e, fb);
         ctx.beginPath();
         ctx.arc(this.x, this.y, radius * 2.6, 0, Math.PI * 2);
         ctx.fillStyle = `hsla(${bodyHue}, 90%, ${bodyLight}%, ${alpha * glow * 0.16})`;
@@ -1473,8 +1486,8 @@
       [[44, 32], [52, 16], [62, 30]],
       // bottom fin
       [[46, 68], [54, 84], [62, 70]],
-      // eye
-      [[64, 44], [70, 44], [70, 50], [64, 50]],
+      // eye (wound opposite so it punches a hole)
+      [[64, 50], [70, 50], [70, 44], [64, 44]],
     ],
     star: [
       [[50, 6], [61, 38], [95, 38], [68, 58], [78, 92], [50, 71], [22, 92], [32, 58], [5, 38], [39, 38]],
@@ -1523,18 +1536,18 @@
       // head + body
       [[24, 40], [34, 20], [50, 14], [66, 20], [76, 40], [78, 84],
        [70, 74], [62, 84], [54, 74], [46, 84], [38, 74], [30, 84], [22, 74]],
-      // eyes
-      [[38, 40], [46, 40], [46, 50], [38, 50]],
-      [[54, 40], [62, 40], [62, 50], [54, 50]],
+      // eyes (wound opposite so they punch holes)
+      [[38, 50], [46, 50], [46, 40], [38, 40]],
+      [[54, 50], [62, 50], [62, 40], [54, 40]],
     ],
     skull: [
       // cranium
       [[28, 30], [38, 14], [62, 14], [72, 30], [74, 52], [64, 62], [36, 62], [26, 52]],
       // jaw
       [[38, 62], [62, 62], [60, 82], [40, 82]],
-      // eyes
-      [[36, 34], [46, 34], [46, 46], [36, 46]],
-      [[54, 34], [64, 34], [64, 46], [54, 46]],
+      // eyes (wound opposite so they punch holes)
+      [[36, 46], [46, 46], [46, 34], [36, 34]],
+      [[54, 46], [64, 46], [64, 34], [54, 34]],
     ],
     butterfly: [
       // left wings
@@ -1623,9 +1636,12 @@
       [[42, 34], [34, 18], [52, 30]],
     ],
     owl: [
+      // Body + head as one outline. The two eye discs are wound the OPPOSITE
+      // way to the body so the nonzero fill rule punches them out as holes -
+      // otherwise they fill solid and the owl reads as a featureless blob.
       [[26, 28], [42, 14], [50, 24], [58, 14], [74, 28], [82, 50], [70, 78], [50, 90], [30, 78], [18, 50]],
-      [[32, 38], [46, 34], [46, 50], [32, 50]],
-      [[54, 34], [68, 38], [68, 50], [54, 50]],
+      [[32, 50], [46, 50], [46, 34], [32, 34]],
+      [[54, 50], [68, 50], [68, 34], [54, 34]],
     ],
     bee: [
       [[22, 44], [34, 28], [66, 28], [78, 44], [66, 64], [34, 64]],
@@ -1668,12 +1684,14 @@
     lock: [
       [[28, 42], [28, 28], [36, 16], [50, 10], [64, 16], [72, 28], [72, 42]],
       [[20, 40], [80, 40], [80, 88], [20, 88]],
-      [[46, 56], [54, 56], [54, 74], [46, 74]],
+      // keyhole (wound opposite so it punches a hole)
+      [[46, 74], [54, 74], [54, 56], [46, 56]],
     ],
     smile: [
       [[18, 30], [30, 18], [70, 18], [82, 30], [90, 50], [82, 70], [70, 82], [30, 82], [18, 70], [10, 50]],
-      [[30, 40], [40, 40], [40, 50], [30, 50]],
-      [[60, 40], [70, 40], [70, 50], [60, 50]],
+      // eyes (wound opposite so they punch holes)
+      [[30, 50], [40, 50], [40, 40], [30, 40]],
+      [[60, 50], [70, 50], [70, 40], [60, 40]],
       [[28, 58], [38, 68], [62, 68], [72, 58]],
     ],
     diamond: [
@@ -2150,6 +2168,27 @@
         }
       }
     }
+
+    // A tiny mark (a 2px eye) can rasterise to only one or two sample points,
+    // which then reads as a single dim dot. Guarantee a minimum number of
+    // points per mark by cloning the sampled ones with a small offset, so
+    // every eye is a small cluster rather than a lone speck.
+    const minPerMark = Math.max(1, CONFIG.featureMinParticles);
+    if (out.length && out.length < feats.length * minPerMark) {
+      const base = out.slice();
+      let i = 0;
+      while (out.length < feats.length * minPerMark) {
+        const src = base[i % base.length];
+        const a = rand(0, Math.PI * 2);
+        const rr = rand(1.2, 2.6);
+        out.push({
+          x: src.x + Math.cos(a) * rr,
+          y: src.y + Math.sin(a) * rr,
+          tier: 'detail', d: 0, feature: true,
+        });
+        i++;
+      }
+    }
     return out;
   }
 
@@ -2238,20 +2277,39 @@
   }
 
   // Fallback for words with no silhouette: spell the word out in particles.
+  //
+  // Placement matters here. The text is fitted to a target width (so long
+  // words shrink instead of overflowing the viewport), the glyph box is
+  // measured from the real ink bounds rather than a guessed line height, and
+  // the whole block is centred on the same optical centre the silhouettes use.
+  // Points are left in reading order so the nearest-neighbour matcher can
+  // assemble the letters from the particles already sitting closest to them.
   function formText(text) {
-    const fontSize = Math.min(W, H) * 0.34;
-    const font = `900 ${fontSize}px ui-monospace, Menlo, monospace`;
+    // Fit the word to a comfortable fraction of the viewport. A single short
+    // word can be large; a long phrase is scaled down until it fits.
+    const maxW = Math.min(W * 0.82, H * 1.6);
+    const maxH = H * 0.42;
+    let fontSize = Math.min(H * 0.34, maxH);
 
+    const fontFor = (px) => `900 ${px}px ui-monospace, Menlo, monospace`;
     shapeCtx.setTransform(1, 0, 0, 1, 0, 0);
-    shapeCtx.font = font;
-    const metrics = shapeCtx.measureText(text);
-    const pad = fontSize * 0.25;
+    shapeCtx.font = fontFor(fontSize);
+
+    // Shrink until the measured width fits the target box.
+    let metrics = shapeCtx.measureText(text);
+    if (metrics.width > maxW) {
+      fontSize = Math.max(12, fontSize * (maxW / metrics.width));
+      shapeCtx.font = fontFor(fontSize);
+      metrics = shapeCtx.measureText(text);
+    }
+
+    const pad = fontSize * 0.22;
     const cw = Math.ceil(metrics.width + pad * 2);
-    const ch = Math.ceil(fontSize * 1.5);
+    const ch = Math.ceil(fontSize * 1.35);
 
     shapeCanvas.width = cw;
     shapeCanvas.height = ch;
-    shapeCtx.font = font;
+    shapeCtx.font = fontFor(fontSize);
     shapeCtx.textAlign = 'center';
     shapeCtx.textBaseline = 'middle';
     shapeCtx.clearRect(0, 0, cw, ch);
@@ -2262,14 +2320,22 @@
     const points = sampleSilhouette(data, cw, ch);
     if (!points.length) return;
 
-    for (let i = points.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [points[i], points[j]] = [points[j], points[i]];
+    // Trim the empty margins so the ink is centred exactly, not the glyph box.
+    let minX = cw, minY = ch, maxX = 0, maxY = 0;
+    for (const p of points) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
     }
+    const inkW = maxX - minX + 1;
+    const inkH = maxY - minY + 1;
+    const ox = (W - inkW) / 2 - minX;
+    const oy = (H - inkH) / 2 - minY;
 
-    const ox = (W - cw) / 2;
-    const oy = (H - ch) / 2;
-    assignTargets(points, ox, oy, text, cw, ch);
+    // Keep reading order: the matcher assigns each glyph point to the nearest
+    // particle, so the word assembles in place instead of scrambling.
+    assignTargets(points, ox, oy, text, inkW, inkH);
   }
 
   // Choose only as many particles as the silhouette can use cleanly. The
@@ -2411,6 +2477,9 @@
       p.edgeBoost = t.tier === 'edge' ? rand(0.75, 1.0)
                   : t.tier === 'detail' ? rand(0.30, 0.55)
                   : 0;
+      // Feature marks are the shape's identity (eyes, whiskers, stripes), so
+      // they get the strongest boost and stay bright for the whole hold.
+      p.featureBoost = t.feature ? rand(0.85, 1.0) : 0;
 
       // Nudge existing momentum toward the new target instead of launching the
       // particle from an artificial velocity. Because the target is now the
@@ -2444,6 +2513,7 @@
         p.tier = null;
         p.edge = false;
         p.edgeBoost = 0;
+        p.featureBoost = 0;
       }
     }
 
@@ -2542,6 +2612,7 @@
     p.tier = null;
     p.edge = false;
     p.edgeBoost = 0;
+    p.featureBoost = 0;
   }
 
   // Begin melting the formation back into the ambient flow. Particles are
@@ -2773,15 +2844,37 @@
     formWord(text);
   });
 
-  // typing a new word while a shape is held re-forms it live
+  // Typing re-forms live. Known words snap to their silhouette immediately;
+  // anything else is spelled out in particles, but only after a short pause so
+  // the field is not rebuilt on every keystroke while a word is still forming.
+  let typeTimer = 0;
+  let lastTyped = '';
   wordInput.addEventListener('input', () => {
     const text = wordInput.value.trim();
-    if (!text) { clearShape(); return; }
+    if (text === lastTyped) return;
+    lastTyped = text;
+
+    if (!text) {
+      clearTimeout(typeTimer);
+      clearShape();
+      return;
+    }
+
     const resolved = resolveShape(text);
     if (resolved) {
+      // A real silhouette is cheap to build and reads instantly - no debounce.
+      clearTimeout(typeTimer);
       setActivePreset(resolved);
       formWord(text);
+      return;
     }
+
+    // Unknown text: wait for a beat of quiet before spelling it out.
+    setActivePreset('');
+    clearTimeout(typeTimer);
+    typeTimer = setTimeout(() => {
+      if (wordInput.value.trim() === text) formWord(text);
+    }, 260);
   });
 
   // ---------------------------------------------------------------- tuning panel
@@ -2824,6 +2917,9 @@
     head.style.cssText = 'margin-bottom:8px;color:rgba(140,200,255,0.9);letter-spacing:0.18em';
     tuningEl.appendChild(head);
 
+    // Keep a handle on every slider so Reset can push values back into them.
+    const sliders = [];
+
     for (const [key, min, max, step] of TUNING) {
       const row = document.createElement('label');
       row.style.cssText = 'display:block;margin-bottom:7px';
@@ -2845,10 +2941,41 @@
         if (key === 'cohesionRadius') CONFIG.cohesionRadiusSq = CONFIG.cohesionRadius ** 2;
       });
 
+      sliders.push({ key, input, label });
       row.appendChild(label);
       row.appendChild(input);
       tuningEl.appendChild(row);
     }
+
+    // --- reset ---------------------------------------------------------
+    // Restores every tunable to its authored default and re-syncs the sliders.
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.textContent = 'Reset to defaults';
+    reset.style.cssText = [
+      'width:100%', 'margin-top:4px', 'padding:7px 10px',
+      'border-radius:8px', 'border:1px solid rgba(90,130,190,0.45)',
+      'background:rgba(90,150,240,0.18)', 'color:#cfe2ff',
+      'font:inherit', 'font-size:10px', 'letter-spacing:0.14em',
+      'text-transform:uppercase', 'cursor:pointer',
+    ].join(';');
+    reset.addEventListener('mouseenter', () => { reset.style.background = 'rgba(90,150,240,0.34)'; });
+    reset.addEventListener('mouseleave', () => { reset.style.background = 'rgba(90,150,240,0.18)'; });
+    reset.addEventListener('click', () => {
+      for (const { key, input, label } of sliders) {
+        CONFIG[key] = CONFIG_DEFAULTS[key];
+        input.value = CONFIG_DEFAULTS[key];
+        label.textContent = `${key}  ${CONFIG_DEFAULTS[key]}`;
+      }
+      // derived values that are not sliders still need restoring
+      CONFIG.mouseRadiusSq = CONFIG.mouseRadius ** 2;
+      CONFIG.cohesionRadiusSq = CONFIG.cohesionRadius ** 2;
+      CONFIG.swarmRadiusSq = CONFIG.swarmRadius ** 2;
+      CONFIG.netDistSq = CONFIG.netDist ** 2;
+      CONFIG.netBreakDistSq = CONFIG.netBreakDist ** 2;
+      CONFIG.mergeDistSq = CONFIG.mergeDist ** 2;
+    });
+    tuningEl.appendChild(reset);
 
     document.body.appendChild(tuningEl);
   }
