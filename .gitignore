@@ -1,4 +1,5 @@
-# Only preview.html is tracked in this repo.
+# Only preview.html and Main.html are tracked in this repo.
 *
 !.gitignore
 !preview.html
+!Main.html
